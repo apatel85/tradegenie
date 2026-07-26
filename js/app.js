@@ -393,9 +393,17 @@ function handleIBKRImport() {
 
 // RESET DATA
 function handleResetData() {
-  if (!confirm('This will permanently delete all trades, accounts, and settings from this browser and restore the sample data. Continue?')) return;
+  if (!confirm('This will permanently delete all trades, accounts, and settings from this browser and start you with a completely blank journal. Continue?')) return;
   resetAllData();
-  loadState();
+  // Set a truly blank state directly, rather than calling loadState() —
+  // loadState() treats an empty localStorage as a first-ever visit and
+  // reseeds the sample demo trades, which defeats the point of "reset".
+  trades = [];
+  accounts = [{ id: 1, name: 'Main Account', broker: 'Manual' }];
+  settings = { ...DEFAULT_SETTINGS };
+  nextId = 1;
+  nextAccountId = 2;
+  persistAll();
   document.getElementById('searchTrades').value = '';
   document.getElementById('filterResult').value = 'all';
   document.getElementById('filterSetup').value = 'all';
@@ -411,7 +419,7 @@ function handleResetData() {
   renderGoalCard();
   document.getElementById('sheetsStatus').textContent = '';
   document.getElementById('ibkrStatus').textContent = '';
-  alert('All data has been reset.');
+  alert('All data has been cleared. You are starting fresh.');
 }
 
 // MODAL
