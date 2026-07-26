@@ -61,6 +61,7 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 - **Add Trade modal**: Full form with all fields, star rating widget, emotional state selector
 - **Edit mode**: Pre-fills form with existing trade data
 - **Auto-calculated P&L and R**: Computed from entry, exit, qty, stop loss
+- **Open positions**: Exit Price can be left blank to log a trade as an open position (shown as an "OPEN" badge, excluded from win rate/P&L/profit factor); editing the trade later to fill in an exit price closes it and computes P&L/R
 
 ### 4.3 Analytics
 - **4 stat cards**: Total Trades, Avg Hold Time, Max Drawdown, Best Trade
