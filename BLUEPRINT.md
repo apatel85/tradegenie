@@ -28,7 +28,7 @@ A mobile-friendly, single-page web application inspired by TradeZella that gives
 ## 3. Architecture
 
 ```
-tradezella-clone/
+tradegenie/
 ├── index.html          # Single-page app shell, all pages as sections
 ├── css/
 │   └── styles.css      # All styles: layout, components, responsive

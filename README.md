@@ -30,8 +30,8 @@ Fully responsive with hamburger sidebar navigation for mobile screens.
 ## 🏃 Quick Start
 
 ```bash
-git clone https://github.com/apatel85/tradezella-clone.git
-cd tradezella-clone
+git clone https://github.com/apatel85/tradegenie.git
+cd tradegenie
 open index.html
 ```
 
