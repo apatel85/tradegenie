@@ -1,4 +1,4 @@
-# ⚡ TradeZella Clone
+# ⚡ TradeGenie
 
 A mobile-friendly, single-page trading journal web app inspired by [TradeZella](https://www.tradezella.com/).
 
@@ -8,7 +8,7 @@ A mobile-friendly, single-page trading journal web app inspired by [TradeZella](
 - **Trade Journal** — Add, edit, delete trades with full filtering
 - **Analytics** — 4 charts: by setup, time of day, MFE/MAE scatter, win rate by day
 - **Playbook** — Strategy cards with win rate, P&L, and R-multiple
-- **Zella AI** — AI insight cards + interactive chat
+- **Genie AI** — AI insight cards + interactive chat
 - **Backtesting** — Configure strategy, run simulation, view equity curve
 - **PropFirm Sync** — Track FTMO/TopStep/Apex rules in real-time
 - **Accounts** — Multi-account trade tracking with per-account performance reports

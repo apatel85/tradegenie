@@ -85,7 +85,7 @@ async function exportTradesToGoogleSheets(tradeList, settings, { onStatus } = {}
     const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ properties: { title: `TradeZella Journal Export — ${new Date().toLocaleDateString()}` } }),
+      body: JSON.stringify({ properties: { title: `TradeGenie Journal Export — ${new Date().toLocaleDateString()}` } }),
     });
     if (!createRes.ok) throw new Error(`Could not create spreadsheet (${createRes.status}). Check the OAuth Client ID and that the Sheets API is enabled.`);
     const created = await createRes.json();

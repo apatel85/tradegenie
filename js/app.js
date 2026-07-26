@@ -585,7 +585,7 @@ function renderAIInsights() {
       <div class="insight-text">${i.text}</div>
     </div>`).join('');
   const chatMessages = document.getElementById('chatMessages');
-  chatMessages.innerHTML = `<div class="chat-msg ai">Hi! I'm Zella AI. Ask me anything about your trades — patterns, setups, risk, or performance.</div>`;
+  chatMessages.innerHTML = `<div class="chat-msg ai">Hi! I'm Genie AI. Ask me anything about your trades — patterns, setups, risk, or performance.</div>`;
 }
 
 function sendAIMessage() {
