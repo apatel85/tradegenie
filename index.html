@@ -22,7 +22,9 @@
       <li><a href="#" class="nav-item" data-page="ai"><i class="fa fa-robot"></i> AI Insights</a></li>
       <li><a href="#" class="nav-item" data-page="backtesting"><i class="fa fa-history"></i> Backtesting</a></li>
       <li><a href="#" class="nav-item" data-page="propfirm"><i class="fa fa-building"></i> PropFirm Sync</a></li>
+      <li><a href="#" class="nav-item" data-page="accounts"><i class="fa fa-wallet"></i> Accounts</a></li>
       <li><a href="#" class="nav-item" data-page="spaces"><i class="fa fa-users"></i> Spaces</a></li>
+      <li><a href="#" class="nav-item" data-page="settings"><i class="fa fa-cog"></i> Settings</a></li>
     </ul>
     <div class="sidebar-footer">
       <div class="plan-badge">Pro Plan</div>
@@ -72,6 +74,13 @@
           <div class="stat-sub">Risk-adjusted return</div>
         </div>
       </div>
+      <div class="card goal-card" id="goalCard">
+        <div class="card-header">
+          <h3><i class="fa fa-bullseye"></i> Daily Goal</h3>
+          <a href="#" class="nav-item link-action" data-page="settings">Edit Goal</a>
+        </div>
+        <div id="goalCardBody"></div>
+      </div>
       <div class="dashboard-grid">
         <div class="card chart-card">
           <div class="card-header"><h3>Cumulative P&L</h3></div>
@@ -113,6 +122,10 @@
           <option value="reversal">Reversal</option>
           <option value="momentum">Momentum</option>
           <option value="scalp">Scalp</option>
+          <option value="other">Other</option>
+        </select>
+        <select id="filterAccount">
+          <option value="all">All Accounts</option>
         </select>
       </div>
       <div class="table-wrap">
@@ -123,6 +136,7 @@
               <th>Symbol</th>
               <th>Side</th>
               <th>Setup</th>
+              <th>Account</th>
               <th>Entry</th>
               <th>Exit</th>
               <th>P&L</th>
@@ -274,6 +288,89 @@
       <div class="page-header"><h1>Spaces</h1><button class="btn-primary"><i class="fa fa-plus"></i> Create Space</button></div>
       <div class="spaces-grid" id="spacesGrid"></div>
     </section>
+
+    <!-- ACCOUNTS PAGE -->
+    <section id="page-accounts" class="page">
+      <div class="page-header">
+        <h1>Accounts</h1>
+        <button class="btn-primary" id="addAccountBtn"><i class="fa fa-plus"></i> Add Account</button>
+      </div>
+      <p class="page-sub">Track performance separately across every account you trade — prop firm, personal brokerage, retirement, etc.</p>
+      <div class="accounts-grid" id="accountsGrid"></div>
+    </section>
+
+    <!-- SETTINGS PAGE -->
+    <section id="page-settings" class="page">
+      <div class="page-header"><h1>Settings</h1></div>
+
+      <div class="card settings-card">
+        <div class="card-header"><h3><i class="fa fa-bullseye"></i> Daily Goal</h3></div>
+        <p class="settings-desc">Set a daily profit target. Your dashboard will assess each day against it and give you feedback aimed at taming overtrading on green days and revenge trading on red days.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Daily Goal ($)</label>
+            <input type="number" id="set-dailyGoal" placeholder="300" step="1" />
+          </div>
+        </div>
+        <button class="btn-primary" id="saveGoalBtn">Save Goal</button>
+      </div>
+
+      <div class="card settings-card">
+        <div class="card-header"><h3><i class="fa fa-wallet"></i> Manage Accounts</h3></div>
+        <p class="settings-desc">Accounts used in the "Add Trade" form and the Accounts performance report.</p>
+        <div id="settingsAccountsList" class="settings-accounts-list"></div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="form-group">
+            <label>Account Name</label>
+            <input type="text" id="new-account-name" placeholder="e.g., Swing Account" />
+          </div>
+          <div class="form-group">
+            <label>Broker</label>
+            <input type="text" id="new-account-broker" placeholder="e.g., Interactive Brokers" />
+          </div>
+        </div>
+        <button class="btn-outline" id="addAccountInlineBtn"><i class="fa fa-plus"></i> Add Account</button>
+      </div>
+
+      <div class="card settings-card">
+        <div class="card-header"><h3><i class="fa fa-table"></i> Export to Google Sheets</h3></div>
+        <p class="settings-desc">Exports your full trade history directly into a Google Sheet. Requires a Google OAuth Client ID from your own <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud project</a> (Sheets API enabled, Web application type, this page's origin added to Authorized JavaScript origins). Your credentials stay in this browser only.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Google OAuth Client ID</label>
+            <input type="text" id="set-googleClientId" placeholder="xxxxxxxx.apps.googleusercontent.com" />
+          </div>
+          <div class="form-group">
+            <label>Existing Sheet ID (optional)</label>
+            <input type="text" id="set-googleSheetId" placeholder="Leave blank to create a new sheet" />
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn-primary" id="exportSheetsBtn"><i class="fa fa-file-export"></i> Connect &amp; Export to Google Sheets</button>
+          <button class="btn-outline" id="exportCsvBtn"><i class="fa fa-download"></i> Export CSV (no setup needed)</button>
+        </div>
+        <div id="sheetsStatus" class="settings-status"></div>
+      </div>
+
+      <div class="card settings-card">
+        <div class="card-header"><h3><i class="fa fa-sync"></i> Sync from Interactive Brokers</h3></div>
+        <p class="settings-desc">IBKR doesn't expose a browser-based live sync API, so upload a CSV export of the <strong>Trades</strong> section from a Flex Query or Activity Statement (Report → Flex Queries, or Reports → Activity). Executions are automatically matched FIFO into round-trip trades.</p>
+        <div class="form-grid">
+          <div class="form-group full-width">
+            <label>IBKR Trades CSV</label>
+            <input type="file" id="ibkrFileInput" accept=".csv" />
+          </div>
+        </div>
+        <button class="btn-primary" id="ibkrImportBtn"><i class="fa fa-upload"></i> Import Trades</button>
+        <div id="ibkrStatus" class="settings-status"></div>
+      </div>
+
+      <div class="card settings-card danger-card">
+        <div class="card-header"><h3><i class="fa fa-triangle-exclamation"></i> Reset Data</h3></div>
+        <p class="settings-desc">Permanently clears all trades, accounts, and settings from this browser and restores the original sample data so you can start fresh.</p>
+        <button class="btn-danger" id="resetDataBtn"><i class="fa fa-trash"></i> Reset All Data</button>
+      </div>
+    </section>
   </main>
 
   <!-- ADD TRADE MODAL -->
@@ -307,6 +404,7 @@
               <option value="reversal">Reversal</option>
               <option value="momentum">Momentum</option>
               <option value="scalp">Scalp</option>
+              <option value="other">Other</option>
             </select>
           </div>
           <div class="form-group">
@@ -324,6 +422,10 @@
           <div class="form-group">
             <label>Stop Loss</label>
             <input type="number" id="f-stop" placeholder="0.00" step="0.01" />
+          </div>
+          <div class="form-group">
+            <label>Account *</label>
+            <select id="f-account"></select>
           </div>
           <div class="form-group full-width">
             <label>Notes</label>
@@ -360,7 +462,11 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script src="js/data.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/goals.js"></script>
+  <script src="js/integrations.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
