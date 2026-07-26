@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TradeZella Clone | AI Trading Journal</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+</head>
+<body>
+  <!-- SIDEBAR NAV -->
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo"><span class="logo-icon">⚡</span> TradeZella</div>
+      <button class="close-sidebar" id="closeSidebar"><i class="fa fa-times"></i></button>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#" class="nav-item active" data-page="dashboard"><i class="fa fa-th-large"></i> Dashboard</a></li>
+      <li><a href="#" class="nav-item" data-page="journal"><i class="fa fa-book"></i> Journal</a></li>
+      <li><a href="#" class="nav-item" data-page="analytics"><i class="fa fa-chart-line"></i> Analytics</a></li>
+      <li><a href="#" class="nav-item" data-page="playbook"><i class="fa fa-layer-group"></i> Playbook</a></li>
+      <li><a href="#" class="nav-item" data-page="ai"><i class="fa fa-robot"></i> AI Insights</a></li>
+      <li><a href="#" class="nav-item" data-page="backtesting"><i class="fa fa-history"></i> Backtesting</a></li>
+      <li><a href="#" class="nav-item" data-page="propfirm"><i class="fa fa-building"></i> PropFirm Sync</a></li>
+      <li><a href="#" class="nav-item" data-page="spaces"><i class="fa fa-users"></i> Spaces</a></li>
+    </ul>
+    <div class="sidebar-footer">
+      <div class="plan-badge">Pro Plan</div>
+      <div class="user-info"><i class="fa fa-user-circle"></i> apatel85</div>
+    </div>
+  </nav>
+
+  <!-- MOBILE TOP BAR -->
+  <header class="topbar">
+    <button class="hamburger" id="hamburger"><i class="fa fa-bars"></i></button>
+    <div class="topbar-logo"><span class="logo-icon">⚡</span> TradeZella</div>
+    <div class="topbar-actions">
+      <button class="btn-primary" id="addTradeBtn"><i class="fa fa-plus"></i> Add Trade</button>
+    </div>
+  </header>
+
+  <!-- OVERLAY -->
+  <div class="overlay" id="overlay"></div>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content">
+    <!-- DASHBOARD PAGE -->
+    <section id="page-dashboard" class="page active">
+      <div class="page-header">
+        <h1>Dashboard</h1>
+        <span class="date-badge" id="currentDate"></span>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card green">
+          <div class="stat-label">Net P&L</div>
+          <div class="stat-value" id="stat-pnl">+$2,340.50</div>
+          <div class="stat-sub">+12.4% this month</div>
+        </div>
+        <div class="stat-card blue">
+          <div class="stat-label">Win Rate</div>
+          <div class="stat-value" id="stat-winrate">67%</div>
+          <div class="stat-sub">24 of 36 trades</div>
+        </div>
+        <div class="stat-card purple">
+          <div class="stat-label">Profit Factor</div>
+          <div class="stat-value">2.14</div>
+          <div class="stat-sub">Target: &gt; 1.5</div>
+        </div>
+        <div class="stat-card orange">
+          <div class="stat-label">Avg R-Multiple</div>
+          <div class="stat-value">1.8R</div>
+          <div class="stat-sub">Risk-adjusted return</div>
+        </div>
+      </div>
+      <div class="dashboard-grid">
+        <div class="card chart-card">
+          <div class="card-header"><h3>Cumulative P&L</h3></div>
+          <canvas id="pnlChart" height="200"></canvas>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>Recent Trades</h3><a href="#" class="nav-item link-action" data-page="journal">View All</a></div>
+          <div id="recentTrades"></div>
+        </div>
+      </div>
+      <div class="dashboard-grid">
+        <div class="card">
+          <div class="card-header"><h3>Win/Loss by Day</h3></div>
+          <canvas id="dayChart" height="180"></canvas>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>AI Summary</h3><span class="badge">Zella AI</span></div>
+          <div class="ai-summary" id="aiSummary">Analyzing your recent trades...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- JOURNAL PAGE -->
+    <section id="page-journal" class="page">
+      <div class="page-header">
+        <h1>Trade Journal</h1>
+        <button class="btn-primary" id="journalAddBtn"><i class="fa fa-plus"></i> Add Trade</button>
+      </div>
+      <div class="filter-bar">
+        <input type="text" id="searchTrades" placeholder="Search symbol..." />
+        <select id="filterResult">
+          <option value="all">All Results</option>
+          <option value="win">Wins</option>
+          <option value="loss">Losses</option>
+        </select>
+        <select id="filterSetup">
+          <option value="all">All Setups</option>
+          <option value="breakout">Breakout</option>
+          <option value="reversal">Reversal</option>
+          <option value="momentum">Momentum</option>
+          <option value="scalp">Scalp</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table id="tradeTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Setup</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>P&L</th>
+              <th>R</th>
+              <th>Rating</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tradeBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ANALYTICS PAGE -->
+    <section id="page-analytics" class="page">
+      <div class="page-header"><h1>Analytics</h1></div>
+      <div class="stats-grid">
+        <div class="stat-card green"><div class="stat-label">Total Trades</div><div class="stat-value" id="an-total">36</div></div>
+        <div class="stat-card blue"><div class="stat-label">Avg Hold Time</div><div class="stat-value">14 min</div></div>
+        <div class="stat-card purple"><div class="stat-label">Max Drawdown</div><div class="stat-value">-$480</div></div>
+        <div class="stat-card orange"><div class="stat-label">Best Trade</div><div class="stat-value">+$890</div></div>
+      </div>
+      <div class="dashboard-grid">
+        <div class="card">
+          <div class="card-header"><h3>P&L by Setup</h3></div>
+          <canvas id="setupChart" height="220"></canvas>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>P&L by Time of Day</h3></div>
+          <canvas id="timeChart" height="220"></canvas>
+        </div>
+      </div>
+      <div class="dashboard-grid">
+        <div class="card">
+          <div class="card-header"><h3>MFE vs MAE</h3></div>
+          <canvas id="mfeChart" height="220"></canvas>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>Win Rate by Day of Week</h3></div>
+          <canvas id="weekChart" height="220"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- PLAYBOOK PAGE -->
+    <section id="page-playbook" class="page">
+      <div class="page-header"><h1>Playbook</h1><button class="btn-primary" id="addPlaybookBtn"><i class="fa fa-plus"></i> New Strategy</button></div>
+      <div class="playbook-grid" id="playbookGrid"></div>
+    </section>
+
+    <!-- AI INSIGHTS PAGE -->
+    <section id="page-ai" class="page">
+      <div class="page-header"><h1>Zella AI Insights</h1><span class="badge">Powered by AI</span></div>
+      <div class="ai-chat-container">
+        <div class="ai-insights-cards" id="aiInsightsCards"></div>
+        <div class="ai-chat-box">
+          <div class="chat-messages" id="chatMessages"></div>
+          <div class="chat-input-row">
+            <input type="text" id="chatInput" placeholder="Ask Zella AI anything about your trades..." />
+            <button class="btn-primary" id="chatSendBtn"><i class="fa fa-paper-plane"></i></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BACKTESTING PAGE -->
+    <section id="page-backtesting" class="page">
+      <div class="page-header"><h1>Backtesting</h1></div>
+      <div class="backtest-container">
+        <div class="card">
+          <div class="card-header"><h3>Configure Strategy Backtest</h3></div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Strategy Name</label>
+              <input type="text" id="bt-name" placeholder="e.g., Opening Range Breakout" />
+            </div>
+            <div class="form-group">
+              <label>Symbol</label>
+              <input type="text" id="bt-symbol" placeholder="e.g., SPY, AAPL" />
+            </div>
+            <div class="form-group">
+              <label>Date Range Start</label>
+              <input type="date" id="bt-start" />
+            </div>
+            <div class="form-group">
+              <label>Date Range End</label>
+              <input type="date" id="bt-end" />
+            </div>
+            <div class="form-group">
+              <label>Entry Condition (plain English)</label>
+              <textarea id="bt-condition" rows="2" placeholder="e.g., Buy when price breaks above 9EMA on 5min chart with above average volume"></textarea>
+            </div>
+            <div class="form-group">
+              <label>Risk per Trade ($)</label>
+              <input type="number" id="bt-risk" placeholder="100" />
+            </div>
+          </div>
+          <button class="btn-primary" id="runBacktestBtn"><i class="fa fa-play"></i> Run Backtest</button>
+        </div>
+        <div class="card" id="backtestResults" style="display:none">
+          <div class="card-header"><h3>Backtest Results</h3></div>
+          <div class="stats-grid" id="btStatsGrid"></div>
+          <canvas id="btChart" height="220"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROPFIRM SYNC PAGE -->
+    <section id="page-propfirm" class="page">
+      <div class="page-header"><h1>PropFirm Sync</h1></div>
+      <div class="propfirm-grid">
+        <div class="card propfirm-card">
+          <div class="pf-logo">FTMO</div>
+          <div class="pf-status connected">Connected</div>
+          <div class="pf-rules" id="pfRules">
+            <div class="rule-row">
+              <span>Profit Target</span>
+              <div class="rule-bar"><div class="rule-fill" style="width:62%"></div></div>
+              <span>$6,200 / $10,000</span>
+            </div>
+            <div class="rule-row">
+              <span>Max Daily DD</span>
+              <div class="rule-bar"><div class="rule-fill red" style="width:28%"></div></div>
+              <span>$280 / $1,000</span>
+            </div>
+            <div class="rule-row">
+              <span>Max Total DD</span>
+              <div class="rule-bar"><div class="rule-fill yellow" style="width:45%"></div></div>
+              <span>$4,500 / $10,000</span>
+            </div>
+          </div>
+          <div class="pf-forecast">Pass Forecast: <strong>78%</strong></div>
+        </div>
+        <div class="card propfirm-card">
+          <div class="pf-logo">TopStep</div>
+          <div class="pf-status disconnected">Not Connected</div>
+          <button class="btn-outline">Connect Account</button>
+        </div>
+        <div class="card propfirm-card">
+          <div class="pf-logo">Apex</div>
+          <div class="pf-status disconnected">Not Connected</div>
+          <button class="btn-outline">Connect Account</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SPACES PAGE -->
+    <section id="page-spaces" class="page">
+      <div class="page-header"><h1>Spaces</h1><button class="btn-primary"><i class="fa fa-plus"></i> Create Space</button></div>
+      <div class="spaces-grid" id="spacesGrid"></div>
+    </section>
+  </main>
+
+  <!-- ADD TRADE MODAL -->
+  <div class="modal-overlay" id="tradeModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modalTitle">Add Trade</h2>
+        <button class="modal-close" id="closeModal"><i class="fa fa-times"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Symbol *</label>
+            <input type="text" id="f-symbol" placeholder="AAPL" required />
+          </div>
+          <div class="form-group">
+            <label>Date *</label>
+            <input type="date" id="f-date" required />
+          </div>
+          <div class="form-group">
+            <label>Side</label>
+            <select id="f-side">
+              <option value="long">Long</option>
+              <option value="short">Short</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Setup</label>
+            <select id="f-setup">
+              <option value="breakout">Breakout</option>
+              <option value="reversal">Reversal</option>
+              <option value="momentum">Momentum</option>
+              <option value="scalp">Scalp</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Entry Price *</label>
+            <input type="number" id="f-entry" placeholder="0.00" step="0.01" required />
+          </div>
+          <div class="form-group">
+            <label>Exit Price *</label>
+            <input type="number" id="f-exit" placeholder="0.00" step="0.01" required />
+          </div>
+          <div class="form-group">
+            <label>Shares/Contracts</label>
+            <input type="number" id="f-qty" placeholder="100" />
+          </div>
+          <div class="form-group">
+            <label>Stop Loss</label>
+            <input type="number" id="f-stop" placeholder="0.00" step="0.01" />
+          </div>
+          <div class="form-group full-width">
+            <label>Notes</label>
+            <textarea id="f-notes" rows="3" placeholder="What was your thesis? What happened?"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Rating (1-5)</label>
+            <div class="star-rating" id="starRating">
+              <span class="star" data-val="1">★</span>
+              <span class="star" data-val="2">★</span>
+              <span class="star" data-val="3">★</span>
+              <span class="star" data-val="4">★</span>
+              <span class="star" data-val="5">★</span>
+            </div>
+            <input type="hidden" id="f-rating" value="3" />
+          </div>
+          <div class="form-group">
+            <label>Emotional State</label>
+            <select id="f-emotion">
+              <option value="focused">Focused</option>
+              <option value="confident">Confident</option>
+              <option value="anxious">Anxious</option>
+              <option value="fomo">FOMO</option>
+              <option value="revenge">Revenge</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-outline" id="cancelModal">Cancel</button>
+        <button class="btn-primary" id="saveTradeBtn">Save Trade</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
