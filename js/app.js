@@ -23,6 +23,10 @@ const tradeModal = document.getElementById('tradeModal');
 const pages = document.querySelectorAll('.page');
 const navItems = document.querySelectorAll('.nav-item[data-page]');
 
+// A trade is "open" (position still live) when it has no exit price yet.
+function isClosedTrade(t) { return t.pnl !== null && t.pnl !== undefined; }
+function closedTrades() { return trades.filter(isClosedTrade); }
+
 // STATE LOAD / PERSIST
 function loadState() {
   if (isFirstRun()) {
@@ -61,6 +65,8 @@ document.addEventListener('DOMContentLoaded', () => {
   renderAccountsPage();
   renderSettingsPage();
   renderGoalCard();
+  updateDashboardStats();
+  renderAnalyticsStats();
   initStars();
   setupEventListeners();
   setTimeout(() => {
@@ -84,6 +90,7 @@ function handleCrossTabStorageChange(e) {
   renderJournal();
   updateDashboardStats();
   renderDashboardCharts();
+  renderAnalyticsStats();
   renderAnalyticsCharts();
   renderAccountsPage();
   renderSettingsPage();
@@ -98,7 +105,7 @@ function navigateTo(pageId) {
   if (target) target.classList.add('active');
   document.querySelectorAll('.nav-item[data-page="' + pageId + '"]').forEach(n => n.classList.add('active'));
   closeMobileMenu();
-  if (pageId === 'analytics') setTimeout(renderAnalyticsCharts, 100);
+  if (pageId === 'analytics') { renderAnalyticsStats(); setTimeout(renderAnalyticsCharts, 100); }
   if (pageId === 'accounts') renderAccountsPage();
   if (pageId === 'settings') renderSettingsPage();
 }
@@ -196,16 +203,18 @@ function deleteAccount(id) {
 
 function computeAccountStats(accountName) {
   const accTrades = trades.filter(t => t.account === accountName);
-  const total = accTrades.length;
-  const wins = accTrades.filter(t => t.pnl > 0);
-  const losses = accTrades.filter(t => t.pnl < 0);
-  const pnl = accTrades.reduce((s, t) => s + t.pnl, 0);
+  const closed = accTrades.filter(isClosedTrade);
+  const open = accTrades.length - closed.length;
+  const total = closed.length;
+  const wins = closed.filter(t => t.pnl > 0);
+  const losses = closed.filter(t => t.pnl < 0);
+  const pnl = closed.reduce((s, t) => s + t.pnl, 0);
   const grossWin = wins.reduce((s, t) => s + t.pnl, 0);
   const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
   const profitFactor = grossLoss > 0 ? (grossWin / grossLoss) : (grossWin > 0 ? Infinity : 0);
-  const avgR = total ? accTrades.reduce((s, t) => s + (t.r || 0), 0) / total : 0;
+  const avgR = total ? closed.reduce((s, t) => s + (t.r || 0), 0) / total : 0;
   return {
-    total, wins: wins.length, losses: losses.length,
+    total, open, wins: wins.length, losses: losses.length,
     winRate: total ? Math.round((wins.length / total) * 100) : 0,
     pnl: parseFloat(pnl.toFixed(2)),
     profitFactor: isFinite(profitFactor) ? parseFloat(profitFactor.toFixed(2)) : '∞',
@@ -230,7 +239,8 @@ function renderAccountsPage() {
       <div class="account-stats-grid">
         <div class="account-stat"><span class="account-stat-label">Net P&L</span><span class="account-stat-value" style="color:${s.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${s.pnl >= 0 ? '+' : ''}$${Math.abs(s.pnl).toFixed(2)}</span></div>
         <div class="account-stat"><span class="account-stat-label">Win Rate</span><span class="account-stat-value">${s.winRate}%</span></div>
-        <div class="account-stat"><span class="account-stat-label">Trades</span><span class="account-stat-value">${s.total}</span></div>
+        <div class="account-stat"><span class="account-stat-label">Closed Trades</span><span class="account-stat-value">${s.total}</span></div>
+        <div class="account-stat"><span class="account-stat-label">Open</span><span class="account-stat-value">${s.open}</span></div>
         <div class="account-stat"><span class="account-stat-label">Profit Factor</span><span class="account-stat-value">${s.profitFactor}</span></div>
         <div class="account-stat"><span class="account-stat-label">Avg R</span><span class="account-stat-value">${s.avgR}R</span></div>
         <div class="account-stat"><span class="account-stat-label">W / L</span><span class="account-stat-value">${s.wins} / ${s.losses}</span></div>
@@ -365,6 +375,8 @@ function handleIBKRImport() {
       renderRecentTrades();
       updateDashboardStats();
       renderDashboardCharts();
+      renderAnalyticsStats();
+      renderAnalyticsCharts();
       renderAccountsPage();
       renderGoalCard();
       status.textContent = `Imported ${imported.length} trade${imported.length === 1 ? '' : 's'} from Interactive Brokers.`;
@@ -381,9 +393,17 @@ function handleIBKRImport() {
 
 // RESET DATA
 function handleResetData() {
-  if (!confirm('This will permanently delete all trades, accounts, and settings from this browser and restore the sample data. Continue?')) return;
+  if (!confirm('This will permanently delete all trades, accounts, and settings from this browser and start you with a completely blank journal. Continue?')) return;
   resetAllData();
-  loadState();
+  // Set a truly blank state directly, rather than calling loadState() —
+  // loadState() treats an empty localStorage as a first-ever visit and
+  // reseeds the sample demo trades, which defeats the point of "reset".
+  trades = [];
+  accounts = [{ id: 1, name: 'Main Account', broker: 'Manual' }];
+  settings = { ...DEFAULT_SETTINGS };
+  nextId = 1;
+  nextAccountId = 2;
+  persistAll();
   document.getElementById('searchTrades').value = '';
   document.getElementById('filterResult').value = 'all';
   document.getElementById('filterSetup').value = 'all';
@@ -392,13 +412,14 @@ function handleResetData() {
   renderJournal();
   updateDashboardStats();
   renderDashboardCharts();
+  renderAnalyticsStats();
   renderAnalyticsCharts();
   renderAccountsPage();
   renderSettingsPage();
   renderGoalCard();
   document.getElementById('sheetsStatus').textContent = '';
   document.getElementById('ibkrStatus').textContent = '';
-  alert('All data has been reset.');
+  alert('All data has been cleared. You are starting fresh.');
 }
 
 // MODAL
@@ -413,7 +434,7 @@ function openAddTradeModal(tradeId = null) {
       document.getElementById('f-side').value = t.side;
       document.getElementById('f-setup').value = t.setup;
       document.getElementById('f-entry').value = t.entry;
-      document.getElementById('f-exit').value = t.exit;
+      document.getElementById('f-exit').value = t.exit === null || t.exit === undefined ? '' : t.exit;
       document.getElementById('f-qty').value = t.qty;
       document.getElementById('f-stop').value = t.stop;
       document.getElementById('f-notes').value = t.notes;
@@ -449,7 +470,8 @@ function saveTrade() {
   const side = document.getElementById('f-side').value;
   const setup = document.getElementById('f-setup').value;
   const entry = parseFloat(document.getElementById('f-entry').value);
-  const exit = parseFloat(document.getElementById('f-exit').value);
+  const exitRaw = document.getElementById('f-exit').value.trim();
+  const exit = exitRaw === '' ? null : parseFloat(exitRaw);
   const qty = parseInt(document.getElementById('f-qty').value) || 100;
   const stop = parseFloat(document.getElementById('f-stop').value) || (side === 'long' ? entry - 2 : entry + 2);
   const notes = document.getElementById('f-notes').value;
@@ -457,20 +479,24 @@ function saveTrade() {
   const rating = parseInt(document.getElementById('f-rating').value);
   const account = document.getElementById('f-account').value || (accounts[0] && accounts[0].name) || 'Main';
 
-  if (!symbol || !date || isNaN(entry) || isNaN(exit)) {
-    alert('Please fill in required fields: Symbol, Date, Entry Price, Exit Price.');
+  if (!symbol || !date || isNaN(entry) || (exit !== null && isNaN(exit))) {
+    alert('Please fill in required fields: Symbol, Date, Entry Price. Exit Price can be left blank to keep the position open.');
     return;
   }
 
-  const pnl = side === 'long' ? (exit - entry) * qty : (entry - exit) * qty;
-  const riskPerShare = Math.abs(entry - stop);
-  const r = riskPerShare > 0 ? parseFloat((pnl / (riskPerShare * qty)).toFixed(2)) : 0;
+  let pnl = null, r = null;
+  if (exit !== null) {
+    pnl = side === 'long' ? (exit - entry) * qty : (entry - exit) * qty;
+    const riskPerShare = Math.abs(entry - stop);
+    r = riskPerShare > 0 ? parseFloat((pnl / (riskPerShare * qty)).toFixed(2)) : 0;
+    pnl = parseFloat(pnl.toFixed(2));
+  }
 
   if (editingId) {
     const idx = trades.findIndex(t => t.id === editingId);
-    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, entry, exit, qty, stop, pnl: parseFloat(pnl.toFixed(2)), r, notes, emotion, rating, account };
+    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account };
   } else {
-    trades.push({ id: nextId++, symbol, date, side, setup, entry, exit, qty, stop, pnl: parseFloat(pnl.toFixed(2)), r, notes, emotion, rating, account });
+    trades.push({ id: nextId++, symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account });
   }
   trades.sort((a, b) => b.date.localeCompare(a.date));
   persistTrades();
@@ -479,6 +505,8 @@ function saveTrade() {
   renderRecentTrades();
   updateDashboardStats();
   renderDashboardCharts();
+  renderAnalyticsStats();
+  renderAnalyticsCharts();
   renderAccountsPage();
   renderGoalCard();
 }
@@ -491,6 +519,8 @@ function deleteTrade(id) {
   renderRecentTrades();
   updateDashboardStats();
   renderDashboardCharts();
+  renderAnalyticsStats();
+  renderAnalyticsCharts();
   renderAccountsPage();
   renderGoalCard();
 }
@@ -525,29 +555,68 @@ function renderRecentTrades() {
         <div class="trade-symbol">${t.symbol}</div>
         <div class="trade-setup">${t.setup} · ${t.side} · ${t.account || ''}</div>
       </div>
-      <div class="trade-pnl ${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</div>
+      ${isClosedTrade(t)
+        ? `<div class="trade-pnl ${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</div>`
+        : `<span class="tag open-position">OPEN</span>`}
     </div>`).join('');
 }
 
 // AI SUMMARY
 function renderAISummary() {
-  const wins = trades.filter(t => t.pnl > 0).length;
-  const total = trades.length;
-  const pnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const closed = closedTrades();
+  const wins = closed.filter(t => t.pnl > 0).length;
+  const total = closed.length;
+  const pnl = closed.reduce((s, t) => s + t.pnl, 0);
   document.getElementById('aiSummary').innerHTML = `
-    <p>You have taken <strong>${total} trades</strong> with a <strong>${total ? Math.round((wins/total)*100) : 0}% win rate</strong> and <strong>$${pnl.toFixed(2)} net P&L</strong>.</p>
+    <p>You have taken <strong>${total} closed trade${total === 1 ? '' : 's'}</strong> with a <strong>${total ? Math.round((wins/total)*100) : 0}% win rate</strong> and <strong>$${pnl.toFixed(2)} net P&L</strong>.</p>
     <br/>
     <p>🏆 Your best setup is <strong>Breakout</strong> with 68% win rate. Your FOMO trades are hurting you — they average <strong>-1.5R</strong>. Consider a rule: no trades after 2 losses in a row.</p>
   `;
 }
 
 function updateDashboardStats() {
-  const wins = trades.filter(t => t.pnl > 0).length;
-  const total = trades.length;
-  const pnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const closed = closedTrades();
+  const openCount = trades.length - closed.length;
+  const wins = closed.filter(t => t.pnl > 0);
+  const losses = closed.filter(t => t.pnl < 0);
+  const total = closed.length;
+  const pnl = closed.reduce((s, t) => s + t.pnl, 0);
+  const grossWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = grossLoss > 0 ? (grossWin / grossLoss) : (grossWin > 0 ? Infinity : 0);
+  const avgR = total ? closed.reduce((s, t) => s + (t.r || 0), 0) / total : 0;
+
   document.getElementById('stat-pnl').textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
-  document.getElementById('stat-winrate').textContent = total ? Math.round((wins/total)*100) + '%' : '0%';
+  document.getElementById('stat-pnl-sub').textContent = `${total} closed trade${total === 1 ? '' : 's'}`;
+  document.getElementById('stat-winrate').textContent = total ? Math.round((wins.length/total)*100) + '%' : '0%';
+  document.getElementById('stat-winrate-sub').textContent = `${wins.length} of ${total} closed trades`;
+  document.getElementById('stat-pf').textContent = isFinite(profitFactor) ? profitFactor.toFixed(2) : '∞';
+  document.getElementById('stat-avgr').textContent = (avgR >= 0 ? '' : '') + avgR.toFixed(2) + 'R';
+  document.getElementById('stat-open-sub').textContent = `${openCount} open position${openCount === 1 ? '' : 's'}`;
   renderAISummary();
+}
+
+// ANALYTICS STAT CARDS (independent of Chart.js so they always update)
+function renderAnalyticsStats() {
+  const totalEl = document.getElementById('an-total');
+  if (!totalEl) return;
+  const closed = closedTrades();
+  const openCount = trades.length - closed.length;
+
+  totalEl.textContent = trades.length;
+  document.getElementById('an-open').textContent = openCount;
+
+  const best = closed.reduce((m, t) => Math.max(m, t.pnl), 0);
+  document.getElementById('an-best').textContent = (best >= 0 ? '+' : '') + '$' + Math.abs(best).toFixed(2);
+
+  const sorted = [...closed].sort((a, b) => a.date.localeCompare(b.date));
+  let cum = 0, peak = 0, maxDD = 0;
+  sorted.forEach(t => {
+    cum += t.pnl;
+    peak = Math.max(peak, cum);
+    maxDD = Math.min(maxDD, cum - peak);
+  });
+  document.getElementById('an-drawdown').textContent = (maxDD < 0 ? '-' : '') + '$' + Math.abs(maxDD).toFixed(2);
 }
 
 // JOURNAL
@@ -557,15 +626,25 @@ function renderJournal() {
   const setup = document.getElementById('filterSetup').value;
   const account = document.getElementById('filterAccount').value;
   let filtered = trades.filter(t => {
+    const closed = isClosedTrade(t);
     if (search && !t.symbol.toLowerCase().includes(search)) return false;
-    if (result === 'win' && t.pnl <= 0) return false;
-    if (result === 'loss' && t.pnl >= 0) return false;
+    if (result === 'win' && !(closed && t.pnl > 0)) return false;
+    if (result === 'loss' && !(closed && t.pnl < 0)) return false;
+    if (result === 'open' && closed) return false;
     if (setup !== 'all' && t.setup !== setup) return false;
     if (account !== 'all' && t.account !== account) return false;
     return true;
   });
   const tbody = document.getElementById('tradeBody');
-  tbody.innerHTML = filtered.map(t => `
+  tbody.innerHTML = filtered.map(t => {
+    const closed = isClosedTrade(t);
+    const pnlCell = closed
+      ? `<td style="font-weight:700;color:${t.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</td>`
+      : `<td><span class="tag open-position">OPEN</span></td>`;
+    const rCell = closed
+      ? `<td style="color:${t.r >= 0 ? 'var(--green)' : 'var(--red)'}">${t.r >= 0 ? '+' : ''}${t.r}R</td>`
+      : `<td>—</td>`;
+    return `
     <tr>
       <td>${t.date}</td>
       <td><strong>${t.symbol}</strong></td>
@@ -573,15 +652,16 @@ function renderJournal() {
       <td><span class="tag ${t.setup}">${t.setup}</span></td>
       <td>${t.account || ''}</td>
       <td>$${t.entry.toFixed(2)}</td>
-      <td>$${t.exit.toFixed(2)}</td>
-      <td class="${t.pnl >= 0 ? 'pos' : 'neg'}" style="font-weight:700;color:${t.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</td>
-      <td style="color:${t.r >= 0 ? 'var(--green)' : 'var(--red)'}">${t.r >= 0 ? '+' : ''}${t.r}R</td>
+      <td>${closed ? '$' + t.exit.toFixed(2) : '—'}</td>
+      ${pnlCell}
+      ${rCell}
       <td>${'★'.repeat(t.rating)}${'☆'.repeat(5-t.rating)}</td>
       <td>
-        <button class="icon-btn" onclick="openAddTradeModal(${t.id})" title="Edit"><i class="fa fa-edit"></i></button>
+        <button class="icon-btn" onclick="openAddTradeModal(${t.id})" title="${closed ? 'Edit' : 'Edit / Close Position'}"><i class="fa fa-edit"></i></button>
         <button class="icon-btn del" onclick="deleteTrade(${t.id})" title="Delete"><i class="fa fa-trash"></i></button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 // PLAYBOOK
@@ -662,9 +742,15 @@ function getChartDefaults() {
   return { color: 'rgba(108,99,255,0.85)', grid: 'rgba(255,255,255,0.06)', text: '#94a3b8' };
 }
 
+// Parsed as local midnight (not UTC) so the weekday matches the date as typed.
+function weekdayOf(dateStr) {
+  return new Date(dateStr + 'T00:00:00').getDay();
+}
+
 function renderDashboardCharts() {
   if (typeof Chart === 'undefined') { console.warn('Chart.js failed to load; skipping chart rendering.'); return; }
-  const sortedTrades = [...trades].sort((a, b) => a.date.localeCompare(b.date));
+  const closed = closedTrades();
+  const sortedTrades = [...closed].sort((a, b) => a.date.localeCompare(b.date));
   let cum = 0;
   const labels = sortedTrades.map(t => t.date.slice(5));
   const data = sortedTrades.map(t => { cum += t.pnl; return parseFloat(cum.toFixed(2)); });
@@ -677,12 +763,13 @@ function renderDashboardCharts() {
     options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: c.text, maxTicksLimit: 8 }, grid: { color: c.grid } }, y: { ticks: { color: c.text }, grid: { color: c.grid } } }, responsive: true }
   });
 
-  const days = ['Mon','Tue','Wed','Thu','Fri'];
-  const dayPnl = days.map((d, i) => trades.filter((t, j) => j % 5 === i).reduce((s, t) => s + t.pnl, 0));
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri'];
+  const dayIndexes = [1, 2, 3, 4, 5]; // Date.getDay(): Sun=0 ... Sat=6
+  const dayPnl = dayIndexes.map(idx => closed.filter(t => weekdayOf(t.date) === idx).reduce((s, t) => s + t.pnl, 0));
   if (dayChartInstance) dayChartInstance.destroy();
   dayChartInstance = new Chart(document.getElementById('dayChart'), {
     type: 'bar',
-    data: { labels: days, datasets: [{ label: 'P&L by Day', data: dayPnl, backgroundColor: dayPnl.map(v => v >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)') }] },
+    data: { labels: dayNames, datasets: [{ label: 'P&L by Day', data: dayPnl, backgroundColor: dayPnl.map(v => v >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)') }] },
     options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: c.text }, grid: { color: c.grid } }, y: { ticks: { color: c.text }, grid: { color: c.grid } } }, responsive: true }
   });
 }
@@ -690,8 +777,9 @@ function renderDashboardCharts() {
 function renderAnalyticsCharts() {
   if (typeof Chart === 'undefined') { console.warn('Chart.js failed to load; skipping chart rendering.'); return; }
   const c = getChartDefaults();
+  const closed = closedTrades();
   const setups = ['breakout','reversal','momentum','scalp'];
-  const setupPnl = setups.map(s => trades.filter(t => t.setup === s).reduce((sum, t) => sum + t.pnl, 0));
+  const setupPnl = setups.map(s => closed.filter(t => t.setup === s).reduce((sum, t) => sum + t.pnl, 0));
 
   if (setupChartInstance) setupChartInstance.destroy();
   setupChartInstance = new Chart(document.getElementById('setupChart'), {
@@ -700,25 +788,34 @@ function renderAnalyticsCharts() {
     options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: c.text }, grid: { color: c.grid } }, y: { ticks: { color: c.text }, grid: { color: c.grid } } }, responsive: true }
   });
 
-  const hours = ['9:30','10:00','10:30','11:00','12:00','13:00','14:00','15:00'];
-  const timePnl = [420, 680, 290, -80, 110, -200, 150, 340];
+  // P&L by Symbol: real totals from closed trades, top 8 by absolute impact.
+  const bySymbol = {};
+  closed.forEach(t => { bySymbol[t.symbol] = (bySymbol[t.symbol] || 0) + t.pnl; });
+  const symbolEntries = Object.entries(bySymbol).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 8);
   if (timeChartInstance) timeChartInstance.destroy();
   timeChartInstance = new Chart(document.getElementById('timeChart'), {
-    type: 'line',
-    data: { labels: hours, datasets: [{ label: 'Avg P&L', data: timePnl, borderColor: '#00d4aa', backgroundColor: 'rgba(0,212,170,0.12)', fill: true, tension: 0.3 }] },
+    type: 'bar',
+    data: { labels: symbolEntries.map(e => e[0]), datasets: [{ label: 'P&L by Symbol', data: symbolEntries.map(e => parseFloat(e[1].toFixed(2))), backgroundColor: symbolEntries.map(e => e[1] >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)') }] },
     options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: c.text }, grid: { color: c.grid } }, y: { ticks: { color: c.text }, grid: { color: c.grid } } }, responsive: true }
   });
 
-  const mfeData = trades.map(t => ({ x: Math.abs(t.pnl) * 0.4 + Math.random()*50, y: t.pnl }));
+  // Risk ($ at stop) vs realized P&L — real data, no fabricated MFE/MAE.
+  const riskData = closed.map(t => ({ x: parseFloat((Math.abs(t.entry - t.stop) * t.qty).toFixed(2)), y: t.pnl }));
   if (mfeChartInstance) mfeChartInstance.destroy();
   mfeChartInstance = new Chart(document.getElementById('mfeChart'), {
     type: 'scatter',
-    data: { datasets: [{ label: 'MFE vs P&L', data: mfeData, backgroundColor: trades.map(t => t.pnl >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'), pointRadius: 6 }] },
-    options: { plugins: { legend: { display: false } }, scales: { x: { title: { display: true, text: 'MFE ($)', color: c.text }, ticks: { color: c.text }, grid: { color: c.grid } }, y: { title: { display: true, text: 'P&L ($)', color: c.text }, ticks: { color: c.text }, grid: { color: c.grid } } }, responsive: true }
+    data: { datasets: [{ label: 'Risk vs P&L', data: riskData, backgroundColor: closed.map(t => t.pnl >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'), pointRadius: 6 }] },
+    options: { plugins: { legend: { display: false } }, scales: { x: { title: { display: true, text: 'Risk at Stop ($)', color: c.text }, ticks: { color: c.text }, grid: { color: c.grid } }, y: { title: { display: true, text: 'P&L ($)', color: c.text }, ticks: { color: c.text }, grid: { color: c.grid } } }, responsive: true }
   });
 
   const weekDays = ['Mon','Tue','Wed','Thu','Fri'];
-  const weekWR = [72, 58, 65, 45, 80];
+  const weekIndexes = [1, 2, 3, 4, 5];
+  const weekWR = weekIndexes.map(idx => {
+    const dayTrades = closed.filter(t => weekdayOf(t.date) === idx);
+    if (!dayTrades.length) return 0;
+    const wins = dayTrades.filter(t => t.pnl > 0).length;
+    return Math.round((wins / dayTrades.length) * 100);
+  });
   if (weekChartInstance) weekChartInstance.destroy();
   weekChartInstance = new Chart(document.getElementById('weekChart'), {
     type: 'bar',

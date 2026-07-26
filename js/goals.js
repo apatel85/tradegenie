@@ -5,6 +5,7 @@
 function groupPnlByDate(tradeList) {
   const map = {};
   tradeList.forEach(t => {
+    if (t.pnl === null || t.pnl === undefined) return; // open positions haven't realized P&L yet
     map[t.date] = (map[t.date] || 0) + t.pnl;
   });
   return map;

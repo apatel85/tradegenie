@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TradeGenie | AI Trading Journal</title>
-  <link rel="stylesheet" href="css/styles.css?v=3" />
+  <link rel="stylesheet" href="css/styles.css?v=5" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 </head>
 <body>
@@ -55,23 +55,23 @@
       <div class="stats-grid">
         <div class="stat-card green">
           <div class="stat-label">Net P&L</div>
-          <div class="stat-value" id="stat-pnl">+$2,340.50</div>
-          <div class="stat-sub">+12.4% this month</div>
+          <div class="stat-value" id="stat-pnl">$0.00</div>
+          <div class="stat-sub" id="stat-pnl-sub">0 closed trades</div>
         </div>
         <div class="stat-card blue">
           <div class="stat-label">Win Rate</div>
-          <div class="stat-value" id="stat-winrate">67%</div>
-          <div class="stat-sub">24 of 36 trades</div>
+          <div class="stat-value" id="stat-winrate">0%</div>
+          <div class="stat-sub" id="stat-winrate-sub">0 of 0 closed trades</div>
         </div>
         <div class="stat-card purple">
           <div class="stat-label">Profit Factor</div>
-          <div class="stat-value">2.14</div>
+          <div class="stat-value" id="stat-pf">0.00</div>
           <div class="stat-sub">Target: &gt; 1.5</div>
         </div>
         <div class="stat-card orange">
           <div class="stat-label">Avg R-Multiple</div>
-          <div class="stat-value">1.8R</div>
-          <div class="stat-sub">Risk-adjusted return</div>
+          <div class="stat-value" id="stat-avgr">0.00R</div>
+          <div class="stat-sub" id="stat-open-sub">0 open positions</div>
         </div>
       </div>
       <div class="card goal-card" id="goalCard">
@@ -115,6 +115,7 @@
           <option value="all">All Results</option>
           <option value="win">Wins</option>
           <option value="loss">Losses</option>
+          <option value="open">Open</option>
         </select>
         <select id="filterSetup">
           <option value="all">All Setups</option>
@@ -154,10 +155,10 @@
     <section id="page-analytics" class="page">
       <div class="page-header"><h1>Analytics</h1></div>
       <div class="stats-grid">
-        <div class="stat-card green"><div class="stat-label">Total Trades</div><div class="stat-value" id="an-total">36</div></div>
-        <div class="stat-card blue"><div class="stat-label">Avg Hold Time</div><div class="stat-value">14 min</div></div>
-        <div class="stat-card purple"><div class="stat-label">Max Drawdown</div><div class="stat-value">-$480</div></div>
-        <div class="stat-card orange"><div class="stat-label">Best Trade</div><div class="stat-value">+$890</div></div>
+        <div class="stat-card green"><div class="stat-label">Total Trades</div><div class="stat-value" id="an-total">0</div></div>
+        <div class="stat-card blue"><div class="stat-label">Open Positions</div><div class="stat-value" id="an-open">0</div></div>
+        <div class="stat-card purple"><div class="stat-label">Max Drawdown</div><div class="stat-value" id="an-drawdown">$0.00</div></div>
+        <div class="stat-card orange"><div class="stat-label">Best Trade</div><div class="stat-value" id="an-best">$0.00</div></div>
       </div>
       <div class="dashboard-grid">
         <div class="card">
@@ -165,13 +166,13 @@
           <canvas id="setupChart" height="220"></canvas>
         </div>
         <div class="card">
-          <div class="card-header"><h3>P&L by Time of Day</h3></div>
+          <div class="card-header"><h3>P&L by Symbol</h3></div>
           <canvas id="timeChart" height="220"></canvas>
         </div>
       </div>
       <div class="dashboard-grid">
         <div class="card">
-          <div class="card-header"><h3>MFE vs MAE</h3></div>
+          <div class="card-header"><h3>Risk vs P&L</h3></div>
           <canvas id="mfeChart" height="220"></canvas>
         </div>
         <div class="card">
@@ -367,7 +368,7 @@
 
       <div class="card settings-card danger-card">
         <div class="card-header"><h3><i class="fa fa-triangle-exclamation"></i> Reset Data</h3></div>
-        <p class="settings-desc">Permanently clears all trades, accounts, and settings from this browser and restores the original sample data so you can start fresh.</p>
+        <p class="settings-desc">Permanently clears all trades, accounts, and settings from this browser, leaving a completely blank journal so you can start fresh.</p>
         <button class="btn-danger" id="resetDataBtn"><i class="fa fa-trash"></i> Reset All Data</button>
       </div>
     </section>
@@ -412,8 +413,8 @@
             <input type="number" id="f-entry" placeholder="0.00" step="0.01" required />
           </div>
           <div class="form-group">
-            <label>Exit Price *</label>
-            <input type="number" id="f-exit" placeholder="0.00" step="0.01" required />
+            <label>Exit Price <span class="label-hint">(leave blank to keep position open)</span></label>
+            <input type="number" id="f-exit" placeholder="Open position" step="0.01" />
           </div>
           <div class="form-group">
             <label>Shares/Contracts</label>
@@ -463,10 +464,10 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="js/data.js?v=3"></script>
-  <script src="js/storage.js?v=3"></script>
-  <script src="js/goals.js?v=3"></script>
-  <script src="js/integrations.js?v=3"></script>
-  <script src="js/app.js?v=3"></script>
+  <script src="js/data.js?v=5"></script>
+  <script src="js/storage.js?v=5"></script>
+  <script src="js/goals.js?v=5"></script>
+  <script src="js/integrations.js?v=5"></script>
+  <script src="js/app.js?v=5"></script>
 </body>
 </html>
