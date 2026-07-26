@@ -1,4 +1,4 @@
-# TradeZella Clone — App Blueprint
+# TradeGenie — App Blueprint
 
 ## 1. Product Overview
 
@@ -28,7 +28,7 @@ A mobile-friendly, single-page web application inspired by TradeZella that gives
 ## 3. Architecture
 
 ```
-tradezella-clone/
+tradegenie/
 ├── index.html          # Single-page app shell, all pages as sections
 ├── css/
 │   └── styles.css      # All styles: layout, components, responsive
@@ -74,7 +74,7 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 - **Add Strategy button**: Placeholder for future strategy builder
 - Responsive grid: 1–4 columns based on screen size
 
-### 4.5 AI Insights (Zella AI)
+### 4.5 AI Insights (Genie AI)
 - **Insight cards**: 4 pre-computed insights (Tilt Detection, Best Setup, Time Pattern, Risk Management)
 - **AI Chat interface**: User messages + simulated AI responses drawn from trade-data-grounded response bank
 - **Typing delay**: 700ms simulated response time for realism
@@ -214,7 +214,7 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 
 1. ~~Persistent storage~~ — done via `js/storage.js` (localStorage)
 2. ~~CSV import~~ — done for Interactive Brokers via `js/integrations.js`; other brokers (TD Ameritrade, etc.) still TODO
-3. **Real AI integration**: Connect to OpenAI/Claude API for genuine Zella AI responses
+3. **Real AI integration**: Connect to OpenAI/Claude API for genuine Genie AI responses
 4. **Trade screenshot upload**: Attach chart images to trade entries
 5. **Calendar view**: Monthly P&L calendar heatmap
 6. **Risk management alerts**: Client-side daily drawdown rules with browser notifications
