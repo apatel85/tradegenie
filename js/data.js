@@ -1,17 +1,24 @@
+// Sample accounts (for multi-account tracking)
+const SAMPLE_ACCOUNTS = [
+  { id: 1, name: 'Main Brokerage', broker: 'Interactive Brokers' },
+  { id: 2, name: 'FTMO Challenge', broker: 'FTMO' },
+  { id: 3, name: 'Roth IRA', broker: 'Fidelity' },
+];
+
 // Sample trade data
 const SAMPLE_TRADES = [
-  { id: 1, date: '2026-07-01', symbol: 'AAPL', side: 'long', setup: 'breakout', entry: 185.20, exit: 188.50, qty: 100, stop: 183.00, pnl: 330.00, r: 1.5, rating: 4, emotion: 'focused', notes: 'Clean breakout above 9EMA on 5min, held for 20 min.' },
-  { id: 2, date: '2026-07-02', symbol: 'SPY', side: 'short', setup: 'reversal', entry: 524.00, exit: 520.80, qty: 50, stop: 526.00, pnl: 160.00, r: 0.8, rating: 3, emotion: 'confident', notes: 'Failed breakout at HOD, reversed hard.' },
-  { id: 3, date: '2026-07-03', symbol: 'TSLA', side: 'long', setup: 'momentum', entry: 248.00, exit: 253.50, qty: 80, stop: 245.00, pnl: 440.00, r: 1.83, rating: 5, emotion: 'focused', notes: 'Pre-market catalyst. Held through consolidation.' },
-  { id: 4, date: '2026-07-07', symbol: 'NVDA', side: 'long', setup: 'breakout', entry: 480.00, exit: 476.00, qty: 20, stop: 477.00, pnl: -80.00, r: -1.33, rating: 2, emotion: 'anxious', notes: 'Fakeout breakout. Stopped out cleanly.' },
-  { id: 5, date: '2026-07-08', symbol: 'META', side: 'long', setup: 'scalp', entry: 592.00, exit: 594.20, qty: 150, stop: 590.50, pnl: 330.00, r: 1.47, rating: 4, emotion: 'confident', notes: 'Quick scalp off VWAP bounce.' },
-  { id: 6, date: '2026-07-09', symbol: 'AMZN', side: 'short', setup: 'reversal', entry: 215.00, exit: 212.50, qty: 100, stop: 217.00, pnl: 250.00, r: 1.25, rating: 4, emotion: 'focused', notes: 'Double top breakdown near resistance.' },
-  { id: 7, date: '2026-07-10', symbol: 'AAPL', side: 'long', setup: 'momentum', entry: 190.00, exit: 186.00, qty: 100, stop: 187.50, pnl: -400.00, r: -1.6, rating: 1, emotion: 'fomo', notes: 'Chased momentum, no setup. FOMO trade.' },
-  { id: 8, date: '2026-07-11', symbol: 'QQQ', side: 'long', setup: 'breakout', entry: 490.00, exit: 494.80, qty: 60, stop: 487.50, pnl: 288.00, r: 1.92, rating: 5, emotion: 'focused', notes: 'Textbook ORB. Waited for pullback and held trend.' },
-  { id: 9, date: '2026-07-14', symbol: 'MSFT', side: 'short', setup: 'scalp', entry: 440.00, exit: 438.50, qty: 120, stop: 441.00, pnl: 180.00, r: 1.5, rating: 3, emotion: 'confident', notes: 'Small scalp. Quick in and out.' },
-  { id: 10, date: '2026-07-15', symbol: 'SPY', side: 'long', setup: 'reversal', entry: 518.00, exit: 522.00, qty: 80, stop: 515.50, pnl: 320.00, r: 1.28, rating: 4, emotion: 'focused', notes: 'VWAP reclaim into close. Clean reversal.' },
-  { id: 11, date: '2026-07-16', symbol: 'TSLA', side: 'short', setup: 'momentum', entry: 260.00, exit: 265.00, qty: 50, stop: 263.00, pnl: -250.00, r: -1.67, rating: 2, emotion: 'revenge', notes: 'Revenge trade after morning loss. Lesson learned.' },
-  { id: 12, date: '2026-07-17', symbol: 'NVDA', side: 'long', setup: 'breakout', entry: 495.00, exit: 503.00, qty: 40, stop: 491.00, pnl: 320.00, r: 2.0, rating: 5, emotion: 'focused', notes: 'Earnings catalyst follow-through breakout.' },
+  { id: 1, date: '2026-07-01', symbol: 'AAPL', side: 'long', setup: 'breakout', entry: 185.20, exit: 188.50, qty: 100, stop: 183.00, pnl: 330.00, r: 1.5, rating: 4, emotion: 'focused', notes: 'Clean breakout above 9EMA on 5min, held for 20 min.', account: 'Main Brokerage' },
+  { id: 2, date: '2026-07-02', symbol: 'SPY', side: 'short', setup: 'reversal', entry: 524.00, exit: 520.80, qty: 50, stop: 526.00, pnl: 160.00, r: 0.8, rating: 3, emotion: 'confident', notes: 'Failed breakout at HOD, reversed hard.', account: 'Main Brokerage' },
+  { id: 3, date: '2026-07-03', symbol: 'TSLA', side: 'long', setup: 'momentum', entry: 248.00, exit: 253.50, qty: 80, stop: 245.00, pnl: 440.00, r: 1.83, rating: 5, emotion: 'focused', notes: 'Pre-market catalyst. Held through consolidation.', account: 'Main Brokerage' },
+  { id: 4, date: '2026-07-07', symbol: 'NVDA', side: 'long', setup: 'breakout', entry: 480.00, exit: 476.00, qty: 20, stop: 477.00, pnl: -80.00, r: -1.33, rating: 2, emotion: 'anxious', notes: 'Fakeout breakout. Stopped out cleanly.', account: 'FTMO Challenge' },
+  { id: 5, date: '2026-07-08', symbol: 'META', side: 'long', setup: 'scalp', entry: 592.00, exit: 594.20, qty: 150, stop: 590.50, pnl: 330.00, r: 1.47, rating: 4, emotion: 'confident', notes: 'Quick scalp off VWAP bounce.', account: 'FTMO Challenge' },
+  { id: 6, date: '2026-07-09', symbol: 'AMZN', side: 'short', setup: 'reversal', entry: 215.00, exit: 212.50, qty: 100, stop: 217.00, pnl: 250.00, r: 1.25, rating: 4, emotion: 'focused', notes: 'Double top breakdown near resistance.', account: 'Main Brokerage' },
+  { id: 7, date: '2026-07-10', symbol: 'AAPL', side: 'long', setup: 'momentum', entry: 190.00, exit: 186.00, qty: 100, stop: 187.50, pnl: -400.00, r: -1.6, rating: 1, emotion: 'fomo', notes: 'Chased momentum, no setup. FOMO trade.', account: 'Main Brokerage' },
+  { id: 8, date: '2026-07-11', symbol: 'QQQ', side: 'long', setup: 'breakout', entry: 490.00, exit: 494.80, qty: 60, stop: 487.50, pnl: 288.00, r: 1.92, rating: 5, emotion: 'focused', notes: 'Textbook ORB. Waited for pullback and held trend.', account: 'Roth IRA' },
+  { id: 9, date: '2026-07-14', symbol: 'MSFT', side: 'short', setup: 'scalp', entry: 440.00, exit: 438.50, qty: 120, stop: 441.00, pnl: 180.00, r: 1.5, rating: 3, emotion: 'confident', notes: 'Small scalp. Quick in and out.', account: 'Main Brokerage' },
+  { id: 10, date: '2026-07-15', symbol: 'SPY', side: 'long', setup: 'reversal', entry: 518.00, exit: 522.00, qty: 80, stop: 515.50, pnl: 320.00, r: 1.28, rating: 4, emotion: 'focused', notes: 'VWAP reclaim into close. Clean reversal.', account: 'FTMO Challenge' },
+  { id: 11, date: '2026-07-16', symbol: 'TSLA', side: 'short', setup: 'momentum', entry: 260.00, exit: 265.00, qty: 50, stop: 263.00, pnl: -250.00, r: -1.67, rating: 2, emotion: 'revenge', notes: 'Revenge trade after morning loss. Lesson learned.', account: 'Main Brokerage' },
+  { id: 12, date: '2026-07-17', symbol: 'NVDA', side: 'long', setup: 'breakout', entry: 495.00, exit: 503.00, qty: 40, stop: 491.00, pnl: 320.00, r: 2.0, rating: 5, emotion: 'focused', notes: 'Earnings catalyst follow-through breakout.', account: 'Roth IRA' },
 ];
 
 const SAMPLE_PLAYBOOKS = [

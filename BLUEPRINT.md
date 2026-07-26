@@ -20,7 +20,7 @@ A mobile-friendly, single-page web application inspired by TradeZella that gives
 | Frontend | Vanilla HTML5 / CSS3 / JS (ES6+) | Zero dependencies, fast load, fully portable |
 | Charts | Chart.js (CDN) | Lightweight, responsive chart library |
 | Icons | Font Awesome 6 (CDN) | Comprehensive icon set |
-| Storage | In-memory + localStorage (future) | No backend needed for MVP |
+| Storage | localStorage (`js/storage.js`) | Trades, accounts, and settings persist across refresh; no backend needed |
 | Hosting | GitHub Pages | Free, instant, no server |
 
 ---
@@ -34,6 +34,9 @@ tradezella-clone/
 │   └── styles.css      # All styles: layout, components, responsive
 ├── js/
 │   ├── data.js         # Sample seed data and constants
+│   ├── storage.js      # localStorage persistence (trades, accounts, settings)
+│   ├── goals.js         # Daily goal assessment + behavioral feedback engine
+│   ├── integrations.js  # Google Sheets export + Interactive Brokers CSV sync
 │   └── app.js          # All app logic, event handlers, renderers
 └── BLUEPRINT.md        # This document
 ```
@@ -89,6 +92,25 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 ### 4.8 Spaces
 - **Space cards grid**: Emoji avatar, name, member count, description
 - **Create Space button**: Placeholder CTA
+
+### 4.9 Accounts
+- **Account cards grid**: Net P&L, win rate, trade count, profit factor, avg R, win/loss split — computed per account
+- Trades carry an `account` field, editable via the Add/Edit Trade modal and filterable in the Journal
+
+### 4.10 Daily Goal (Dashboard)
+- **Goal card**: Progress bar of today's P&L vs. the configured daily goal
+- **Feedback engine** (`js/goals.js`): reflects on the trailing streak of goal-met days and a "reserve" (cumulative surplus above goal pace) to:
+  - Encourage stopping once the goal is hit (tames overtrading)
+  - Reassure on a losing day after 3+ consecutive goal-hit days, or when banked reserve covers the loss (tames revenge trading)
+  - Warn plainly when a losing day has no streak or reserve cushion
+- Last-7-day dot history for quick visual streak reference
+
+### 4.11 Settings
+- **Daily Goal**: set/update the target used by the goal card
+- **Manage Accounts**: add/remove trading accounts
+- **Export to Google Sheets**: OAuth (Google Identity Services) token flow writes trades directly into a Sheet the user owns; falls back to a no-setup CSV export
+- **Sync from Interactive Brokers**: upload a Flex Query/Activity Statement "Trades" CSV; executions are FIFO-matched per symbol+account into round-trip trades (`js/integrations.js`)
+- **Reset Data**: clears `localStorage` and reseeds the sample dataset
 
 ---
 
@@ -190,16 +212,16 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 
 ## 9. Future Enhancements (v2 Roadmap)
 
-1. **Persistent storage**: localStorage or IndexedDB so trades survive page refresh
-2. **CSV import**: Parse broker trade exports (TD Ameritrade, Interactive Brokers format)
-3. **Real AI integration**: Connect to OpenAI API for genuine Zella AI responses
+1. ~~Persistent storage~~ — done via `js/storage.js` (localStorage)
+2. ~~CSV import~~ — done for Interactive Brokers via `js/integrations.js`; other brokers (TD Ameritrade, etc.) still TODO
+3. **Real AI integration**: Connect to OpenAI/Claude API for genuine Zella AI responses
 4. **Trade screenshot upload**: Attach chart images to trade entries
 5. **Calendar view**: Monthly P&L calendar heatmap
 6. **Risk management alerts**: Client-side daily drawdown rules with browser notifications
 7. **Dark/light mode toggle**: CSS custom property swap
 8. **PWA**: Add manifest.json + service worker for offline use and home screen install
-9. **Backend + auth**: Node.js/Supabase backend with user accounts
-10. **Real broker sync**: OAuth integrations with broker APIs
+9. **Backend + auth**: Node.js/Supabase backend with user accounts, so Google Sheets export and IBKR sync don't rely on per-browser localStorage and user-supplied OAuth credentials
+10. **Live broker sync**: a backend-proxied IBKR Client Portal API session (the CSV sync is a client-only stopgap since IBKR has no browser-callable live API)
 
 ---
 

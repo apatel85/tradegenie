@@ -11,6 +11,9 @@ A mobile-friendly, single-page trading journal web app inspired by [TradeZella](
 - **Zella AI** — AI insight cards + interactive chat
 - **Backtesting** — Configure strategy, run simulation, view equity curve
 - **PropFirm Sync** — Track FTMO/TopStep/Apex rules in real-time
+- **Accounts** — Multi-account trade tracking with per-account performance reports
+- **Daily Goal** — Set a daily P&L target; get behavioral feedback tuned to avoid overtrading on green days and revenge trading on red days
+- **Settings** — Export to Google Sheets (OAuth) or CSV, sync trades from an Interactive Brokers CSV export, manage accounts, and reset all data
 - **Spaces** — Community trading groups
 
 ## 📱 Mobile Friendly
