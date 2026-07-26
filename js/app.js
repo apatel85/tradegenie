@@ -67,7 +67,28 @@ document.addEventListener('DOMContentLoaded', () => {
     renderDashboardCharts();
     renderAnalyticsCharts();
   }, 100);
+  window.addEventListener('storage', handleCrossTabStorageChange);
 });
+
+// Keeps every open tab in sync: if trades/accounts/settings change in
+// localStorage from another tab (e.g. a Reset Data there), pick up the
+// change here too instead of showing stale data.
+function handleCrossTabStorageChange(e) {
+  if (!e.key || ![STORAGE_KEYS.trades, STORAGE_KEYS.accounts, STORAGE_KEYS.settings].includes(e.key)) return;
+  loadState();
+  document.getElementById('searchTrades').value = '';
+  document.getElementById('filterResult').value = 'all';
+  document.getElementById('filterSetup').value = 'all';
+  populateAccountSelects();
+  renderRecentTrades();
+  renderJournal();
+  updateDashboardStats();
+  renderDashboardCharts();
+  renderAnalyticsCharts();
+  renderAccountsPage();
+  renderSettingsPage();
+  renderGoalCard();
+}
 
 // NAV
 function navigateTo(pageId) {
@@ -363,6 +384,9 @@ function handleResetData() {
   if (!confirm('This will permanently delete all trades, accounts, and settings from this browser and restore the sample data. Continue?')) return;
   resetAllData();
   loadState();
+  document.getElementById('searchTrades').value = '';
+  document.getElementById('filterResult').value = 'all';
+  document.getElementById('filterSetup').value = 'all';
   populateAccountSelects();
   renderRecentTrades();
   renderJournal();
