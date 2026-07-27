@@ -3,18 +3,20 @@ const STORAGE_KEYS = {
   trades: 'tz_trades',
   accounts: 'tz_accounts',
   settings: 'tz_settings',
-  nextId: 'tz_nextId',
-  nextAccountId: 'tz_nextAccountId',
+  tombstones: 'tz_tombstones',
+  syncSnapshot: 'tz_syncSnapshot',
 };
 
 const DEFAULT_SETTINGS = {
   dailyGoal: 300,
+  dailyGoalUpdatedAt: '',
   googleClientId: '',
   googleSheetId: '',
   googleSheetUrl: '',
   googleAutoSync: false,
   lastSyncedAt: '',
   finnhubKey: '',
+  twelveDataKey: '',
 };
 
 function loadJSON(key, fallback) {
@@ -60,24 +62,31 @@ function saveSettings(settings) {
   saveJSON(STORAGE_KEYS.settings, settings);
 }
 
-function loadNextId(fallback) {
-  return loadJSON(STORAGE_KEYS.nextId, fallback);
+// Tombstones: records of deleted trades/accounts ({type: 'trade'|'account',
+// id, deletedAt}) so a deletion made on one device propagates to the Google
+// Sheet and to every other device on their next sync, instead of the row
+// silently reappearing.
+function loadTombstones() {
+  return loadJSON(STORAGE_KEYS.tombstones, []);
 }
-function saveNextId(id) {
-  saveJSON(STORAGE_KEYS.nextId, id);
+function saveTombstones(list) {
+  saveJSON(STORAGE_KEYS.tombstones, list);
 }
 
-function loadNextAccountId(fallback) {
-  return loadJSON(STORAGE_KEYS.nextAccountId, fallback);
+// Snapshot of {id: updatedAt} as of the last successful sync, used to tell
+// "only one side changed" (simple update) apart from "both sides changed
+// since we last agreed" (a real conflict) — see mergeWithConflictDetection.
+function loadSyncSnapshot() {
+  return loadJSON(STORAGE_KEYS.syncSnapshot, { trades: {}, accounts: {} });
 }
-function saveNextAccountId(id) {
-  saveJSON(STORAGE_KEYS.nextAccountId, id);
+function saveSyncSnapshot(snapshot) {
+  saveJSON(STORAGE_KEYS.syncSnapshot, snapshot);
 }
 
 function resetAllData() {
   localStorage.removeItem(STORAGE_KEYS.trades);
   localStorage.removeItem(STORAGE_KEYS.accounts);
   localStorage.removeItem(STORAGE_KEYS.settings);
-  localStorage.removeItem(STORAGE_KEYS.nextId);
-  localStorage.removeItem(STORAGE_KEYS.nextAccountId);
+  localStorage.removeItem(STORAGE_KEYS.tombstones);
+  localStorage.removeItem(STORAGE_KEYS.syncSnapshot);
 }

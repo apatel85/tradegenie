@@ -2,7 +2,8 @@
 let trades = [];
 let accounts = [];
 let settings = DEFAULT_SETTINGS;
-let nextAccountId = 1;
+let tombstones = []; // {type:'trade'|'account', id, deletedAt} — see js/integrations.js sync engine
+let syncSnapshot = { trades: {}, accounts: {} };
 let editingId = null;
 let selectedRating = 3;
 let btChartInstance = null;
@@ -71,26 +72,49 @@ function migrateTradeIds(list) {
   return changed;
 }
 
+// Same idea as migrateTradeIds: accounts also need a stable string id (not a
+// per-device counter) plus updatedAt, so they can be synced/merged/deleted
+// across devices the same way trades are.
+function migrateAccountIds(list) {
+  let changed = false;
+  list.forEach(a => {
+    if (!a.id || typeof a.id !== 'string') { a.id = generateSyncId(); changed = true; }
+    if (!a.updatedAt) { a.updatedAt = new Date().toISOString(); changed = true; }
+  });
+  return changed;
+}
+
 function loadState() {
   if (isFirstRun()) {
     trades = [...SAMPLE_TRADES];
-    accounts = [...SAMPLE_ACCOUNTS];
+    accounts = SAMPLE_ACCOUNTS.map(a => ({ ...a, id: generateSyncId(), updatedAt: new Date().toISOString() }));
     settings = { ...DEFAULT_SETTINGS };
-    nextAccountId = accounts.length + 1;
+    tombstones = [];
+    syncSnapshot = { trades: {}, accounts: {} };
     persistAll();
   } else {
     trades = loadTrades() || [...SAMPLE_TRADES];
-    accounts = loadAccounts() || [...SAMPLE_ACCOUNTS];
+    accounts = loadAccounts() || SAMPLE_ACCOUNTS.map(a => ({ ...a, id: generateSyncId(), updatedAt: new Date().toISOString() }));
     settings = loadSettings();
-    nextAccountId = loadNextAccountId(accounts.reduce((m, a) => Math.max(m, a.id), 0) + 1);
-    if (migrateTradeIds(trades)) persistTrades();
+    tombstones = loadTombstones();
+    syncSnapshot = loadSyncSnapshot();
+    let changed = migrateTradeIds(trades);
+    if (migrateAccountIds(accounts)) { saveAccounts(accounts); changed = true; }
+    if (changed) persistTrades();
   }
 }
 
+function recordTombstone(type, id) {
+  tombstones.push({ type, id, deletedAt: new Date().toISOString() });
+  persistTombstones();
+}
+
 function persistTrades() { saveTrades(trades); }
-function persistAccounts() { saveAccounts(accounts); saveNextAccountId(nextAccountId); }
+function persistAccounts() { saveAccounts(accounts); }
 function persistSettings() { saveSettings(settings); }
-function persistAll() { persistTrades(); persistAccounts(); persistSettings(); }
+function persistTombstones() { saveTombstones(tombstones); }
+function persistSyncSnapshot() { saveSyncSnapshot(syncSnapshot); }
+function persistAll() { persistTrades(); persistAccounts(); persistSettings(); persistTombstones(); persistSyncSnapshot(); }
 
 // INIT
 document.addEventListener('DOMContentLoaded', () => {
@@ -125,7 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // localStorage from another tab (e.g. a Reset Data there), pick up the
 // change here too instead of showing stale data.
 function handleCrossTabStorageChange(e) {
-  if (!e.key || ![STORAGE_KEYS.trades, STORAGE_KEYS.accounts, STORAGE_KEYS.settings].includes(e.key)) return;
+  if (!e.key || ![STORAGE_KEYS.trades, STORAGE_KEYS.accounts, STORAGE_KEYS.settings, STORAGE_KEYS.tombstones].includes(e.key)) return;
   loadState();
   document.getElementById('searchTrades').value = '';
   document.getElementById('filterResult').value = 'all';
@@ -201,6 +225,10 @@ function setupEventListeners() {
     settings.finnhubKey = document.getElementById('set-finnhubKey').value.trim();
     persistSettings();
   });
+  document.getElementById('set-twelveDataKey').addEventListener('change', () => {
+    settings.twelveDataKey = document.getElementById('set-twelveDataKey').value.trim();
+    persistSettings();
+  });
   // Settings: reset
   document.getElementById('resetDataBtn').addEventListener('click', handleResetData);
 }
@@ -233,7 +261,7 @@ function addAccount() {
   const broker = document.getElementById('new-account-broker').value.trim() || 'Manual';
   if (!name) { alert('Enter an account name.'); return; }
   if (accounts.some(a => a.name.toLowerCase() === name.toLowerCase())) { alert('An account with that name already exists.'); return; }
-  accounts.push({ id: nextAccountId++, name, broker });
+  accounts.push({ id: generateSyncId(), name, broker, updatedAt: new Date().toISOString() });
   persistAccounts();
   document.getElementById('new-account-name').value = '';
   document.getElementById('new-account-broker').value = '';
@@ -250,6 +278,7 @@ function deleteAccount(id) {
   if (accounts.length === 1) { alert('You need at least one account.'); return; }
   accounts = accounts.filter(a => a.id !== id);
   persistAccounts();
+  recordTombstone('account', id);
   populateAccountSelects();
   renderSettingsPage();
   renderAccountsPage();
@@ -288,7 +317,7 @@ function renderAccountsPage() {
           <div class="account-name">${a.name}</div>
           <div class="account-broker">${a.broker}</div>
         </div>
-        <button class="icon-btn del" onclick="deleteAccount(${a.id})" title="Delete Account"><i class="fa fa-trash"></i></button>
+        <button class="icon-btn del" onclick="deleteAccount('${a.id}')" title="Delete Account"><i class="fa fa-trash"></i></button>
       </div>
       <div class="account-stats-grid">
         <div class="account-stat"><span class="account-stat-label">Net P&L</span><span class="account-stat-value" style="color:${formatSignedMoney(s.pnl).color}">${formatSignedMoney(s.pnl).text}</span></div>
@@ -314,13 +343,15 @@ function renderSettingsPage() {
   renderLastSyncStatus();
   const finnhubInput = document.getElementById('set-finnhubKey');
   if (finnhubInput) finnhubInput.value = settings.finnhubKey || '';
+  const twelveDataInput = document.getElementById('set-twelveDataKey');
+  if (twelveDataInput) twelveDataInput.value = settings.twelveDataKey || '';
 
   const list = document.getElementById('settingsAccountsList');
   if (list) {
     list.innerHTML = accounts.map(a => `
       <div class="settings-account-row">
         <span><strong>${a.name}</strong> <span class="account-broker">· ${a.broker}</span></span>
-        <button class="icon-btn del" onclick="deleteAccount(${a.id})" title="Delete"><i class="fa fa-trash"></i></button>
+        <button class="icon-btn del" onclick="deleteAccount('${a.id}')" title="Delete"><i class="fa fa-trash"></i></button>
       </div>`).join('');
   }
 }
@@ -329,6 +360,7 @@ function saveGoalSetting() {
   const val = parseFloat(document.getElementById('set-dailyGoal').value);
   if (isNaN(val) || val <= 0) { alert('Enter a valid daily goal amount greater than 0.'); return; }
   settings.dailyGoal = val;
+  settings.dailyGoalUpdatedAt = new Date().toISOString();
   persistSettings();
   renderGoalCard();
   alert('Daily goal saved.');
@@ -379,14 +411,15 @@ function readGoogleSettingsFromForm() {
 }
 
 // Ensures every account name referenced by (possibly remote) trades exists
-// locally, auto-creating any that came from another device's sync.
+// locally — a safety net for old data or CSV imports, not the normal sync
+// path (accounts sync as their own entity now, see syncAllWithGoogleSheets).
 function ensureAccountsForTrades(tradeList) {
   const known = new Set(accounts.map(a => a.name));
   let changed = false;
   tradeList.forEach(t => {
     const name = (t.account || '').trim();
     if (name && !known.has(name)) {
-      accounts.push({ id: nextAccountId++, name, broker: 'Synced' });
+      accounts.push({ id: generateSyncId(), name, broker: 'Synced', updatedAt: new Date().toISOString() });
       known.add(name);
       changed = true;
     }
@@ -410,18 +443,33 @@ function refreshAllViews() {
   renderAnalyticsStats();
   renderAnalyticsCharts();
   renderAccountsPage();
+  renderSettingsPage();
   renderGoalCard();
 }
 
-// Push-only: overwrites the Sheet with exactly what's in this device's
-// local trades. Use "Sync Now" instead for keeping multiple devices lined up.
+// Bundles everything that syncs into the shape the Sheets engine expects.
+function buildSyncState() {
+  return {
+    trades,
+    accounts,
+    tombstones,
+    syncSnapshot,
+    settingsMap: {
+      dailyGoal: { value: String(settings.dailyGoal), updatedAt: settings.dailyGoalUpdatedAt || '' },
+    },
+  };
+}
+
+// Push-only: overwrites the Sheet with exactly what's on this device (all
+// years, accounts, settings, tombstones). Use "Sync Now" instead for
+// keeping multiple devices lined up — this doesn't pull anything down.
 async function handleExportToSheets() {
   readGoogleSettingsFromForm();
   const status = document.getElementById('sheetsStatus');
   status.textContent = 'Connecting to Google...';
   status.className = 'settings-status pending';
   try {
-    const result = await exportTradesToGoogleSheets(trades, settings, {
+    const result = await exportTradesToGoogleSheets(buildSyncState(), settings, {
       onStatus: (msg) => { status.textContent = msg; },
     });
     settings.googleSheetId = result.sheetId;
@@ -429,7 +477,7 @@ async function handleExportToSheets() {
     settings.lastSyncedAt = new Date().toISOString();
     persistSettings();
     document.getElementById('set-googleSheetId').value = result.sheetId;
-    status.innerHTML = `Pushed ${trades.length} trades (overwrote the sheet). <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
+    status.innerHTML = `Pushed ${trades.length} trades, ${accounts.length} accounts (overwrote the sheet). <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
     status.className = 'settings-status success';
     renderLastSyncStatus();
   } catch (err) {
@@ -438,20 +486,33 @@ async function handleExportToSheets() {
   }
 }
 
-// Two-way sync: pulls trades added on other devices, merges with what's
-// here, and pushes the combined set back so every device converges.
+// Two-way sync: pulls every year's trades + accounts + settings from the
+// master sheet, merges with what's on this device (applying deletions both
+// ways, flagging genuine conflicts), and pushes the merged result back so
+// every device converges. Run this on every device you use — the sheet is
+// the master copy other devices read from.
 async function handleSyncSheets({ interactive = true, silent = false } = {}) {
   readGoogleSettingsFromForm();
   const status = document.getElementById('sheetsStatus');
   if (!silent) { status.textContent = 'Connecting to Google...'; status.className = 'settings-status pending'; }
   try {
-    const result = await syncTradesWithGoogleSheets(trades, settings, {
+    const result = await syncAllWithGoogleSheets(buildSyncState(), settings, {
       onStatus: (msg) => { if (!silent) status.textContent = msg; },
       interactive,
     });
-    trades = result.merged;
+    trades = result.trades;
+    accounts = result.accounts;
+    tombstones = result.tombstones;
+    syncSnapshot = result.syncSnapshot;
+    if (result.dailyGoal && result.dailyGoal.value !== undefined) {
+      settings.dailyGoal = parseFloat(result.dailyGoal.value) || settings.dailyGoal;
+      settings.dailyGoalUpdatedAt = result.dailyGoal.updatedAt || settings.dailyGoalUpdatedAt;
+    }
     ensureAccountsForTrades(trades);
     persistTrades();
+    persistAccounts();
+    persistTombstones();
+    persistSyncSnapshot();
     settings.googleSheetId = result.sheetId;
     settings.googleSheetUrl = result.sheetUrl;
     settings.googleAutoSync = true;
@@ -460,9 +521,11 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
     document.getElementById('set-googleSheetId').value = result.sheetId;
     refreshAllViews();
     renderLastSyncStatus();
+    renderSyncConflicts(result.conflicts);
     if (!silent) {
-      status.innerHTML = `Synced — pulled ${result.added} new / updated ${result.updated} from the sheet. <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
-      status.className = 'settings-status success';
+      const conflictNote = result.conflicts.length ? ` — ${result.conflicts.length} conflict${result.conflicts.length === 1 ? '' : 's'} found, see below.` : '';
+      status.innerHTML = `Synced — pulled ${result.added} new / updated ${result.updated} from the sheet.${conflictNote} <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
+      status.className = result.conflicts.length ? 'settings-status pending' : 'settings-status success';
     }
   } catch (err) {
     if (!silent) { status.textContent = err.message || 'Sync failed.'; status.className = 'settings-status error'; }
@@ -470,11 +533,60 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
 }
 
 // Best-effort silent sync on load: only succeeds if this browser already has
-// a live Google grant (no popup), so it never surprises the user.
+// a live Google grant (no popup), so it never surprises the user. This is
+// what makes the Google sign-in a one-time thing per device — after the
+// first manual "Sync Now" click, every later visit tries this silently.
 function attemptSilentAutoSync() {
   if (!settings.googleAutoSync || !settings.googleClientId || !settings.googleSheetId) return;
   if (!gisReady()) return;
   handleSyncSheets({ interactive: false, silent: true });
+}
+
+// Shows any genuine conflicts (both this device and the sheet changed the
+// same trade/account since the last successful sync). The newer edit was
+// already kept automatically so sync always completes — this panel just
+// lets you review and override that choice if the auto-pick was wrong.
+function renderSyncConflicts(conflicts) {
+  const panel = document.getElementById('syncConflictsPanel');
+  if (!panel) return;
+  if (!conflicts || !conflicts.length) { panel.innerHTML = ''; return; }
+  panel.innerHTML = `
+    <div class="conflict-panel-title"><i class="fa fa-triangle-exclamation"></i> ${conflicts.length} Sync Conflict${conflicts.length === 1 ? '' : 's'}</div>
+    <p class="settings-desc">These changed on both this device and the sheet since your last sync. The newer edit (by timestamp) was kept automatically — pick a side below if that's not what you want.</p>
+    ${conflicts.map((c, i) => `
+      <div class="conflict-card">
+        <div class="conflict-card-title">${c.description.title}</div>
+        <ul class="conflict-diff-list">${c.description.diffs.map(d => `<li>${d}</li>`).join('') || '<li>Values differ.</li>'}</ul>
+        <div class="conflict-kept">Kept: <strong>${c.kept === 'remote' ? 'Sheet version' : 'This device\'s version'}</strong></div>
+        <div class="conflict-actions">
+          <button class="btn-outline" onclick="resolveSyncConflict(${i}, 'local')">Use This Device's Version</button>
+          <button class="btn-outline" onclick="resolveSyncConflict(${i}, 'remote')">Use Sheet's Version</button>
+        </div>
+      </div>`).join('')}
+  `;
+  panel.dataset.conflicts = JSON.stringify(conflicts);
+}
+
+// Overriding a conflict just re-saves the chosen side with a fresh
+// updatedAt, so it wins on the next sync (no separate "force push" concept
+// needed — the same newest-wins rule handles it).
+function resolveSyncConflict(index, which) {
+  const conflicts = JSON.parse(document.getElementById('syncConflictsPanel').dataset.conflicts || '[]');
+  const c = conflicts[index];
+  if (!c) return;
+  const chosen = { ...(which === 'local' ? c.local : c.remote), updatedAt: new Date().toISOString() };
+  if (chosen.entry !== undefined) { // trade
+    const idx = trades.findIndex(t => t.id === c.id);
+    if (idx !== -1) trades[idx] = chosen; else trades.push(chosen);
+    persistTrades();
+  } else { // account
+    const idx = accounts.findIndex(a => a.id === c.id);
+    if (idx !== -1) accounts[idx] = chosen; else accounts.push(chosen);
+    persistAccounts();
+  }
+  conflicts.splice(index, 1);
+  renderSyncConflicts(conflicts);
+  refreshAllViews();
 }
 
 // INTERACTIVE BROKERS CSV IMPORT
@@ -494,7 +606,7 @@ function handleIBKRImport() {
       imported.forEach(t => {
         const accountName = t.account && t.account.trim() ? t.account.trim() : accounts[0].name;
         if (!accountNames.has(accountName)) {
-          accounts.push({ id: nextAccountId++, name: accountName, broker: 'Interactive Brokers' });
+          accounts.push({ id: generateSyncId(), name: accountName, broker: 'Interactive Brokers', updatedAt: new Date().toISOString() });
           accountNames.add(accountName);
         }
         const securityType = t.securityType || 'stock';
@@ -545,9 +657,10 @@ function handleResetData() {
   // loadState() treats an empty localStorage as a first-ever visit and
   // reseeds the sample demo trades, which defeats the point of "reset".
   trades = [];
-  accounts = [{ id: 1, name: 'Main Account', broker: 'Manual' }];
+  accounts = [{ id: generateSyncId(), name: 'Main Account', broker: 'Manual', updatedAt: new Date().toISOString() }];
   settings = { ...DEFAULT_SETTINGS };
-  nextAccountId = 2;
+  tombstones = [];
+  syncSnapshot = { trades: {}, accounts: {} };
   persistAll();
   document.getElementById('searchTrades').value = '';
   document.getElementById('filterResult').value = 'all';
@@ -564,6 +677,7 @@ function handleResetData() {
   renderGoalCard();
   document.getElementById('sheetsStatus').textContent = '';
   document.getElementById('ibkrStatus').textContent = '';
+  renderSyncConflicts([]);
   alert('All data has been cleared. You are starting fresh.');
 }
 
@@ -661,7 +775,8 @@ async function handleSymbolLookup() {
   resultEl.className = 'symbol-lookup-result has-content';
   resultEl.textContent = 'Looking up...';
   try {
-    const info = await lookupSymbolInfo(settings.finnhubKey, symbol);
+    const securityType = document.getElementById('f-securityType').value;
+    const info = await lookupSymbolInfo({ finnhubKey: settings.finnhubKey, twelveDataKey: settings.twelveDataKey }, symbol, securityType);
     document.getElementById('f-symbol').value = info.symbol;
     lastLookupPrice = info.currentPrice;
     const priceLine = info.currentPrice != null
@@ -753,6 +868,7 @@ function deleteTrade(id) {
   if (!confirm('Delete this trade?')) return;
   trades = trades.filter(t => t.id !== id);
   persistTrades();
+  recordTombstone('trade', id);
   renderJournal();
   renderRecentTrades();
   updateDashboardStats();

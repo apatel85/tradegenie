@@ -84,9 +84,22 @@ function csvEscape(val) {
 // ---------- GOOGLE SHEETS SYNC (OAuth via Google Identity Services) ----------
 // This is a static, backend-less app, so there is no server to hold a
 // long-lived refresh token — each browser/device has to sign in with Google
-// at least once (a popup), after which its own access token is reused for
-// the rest of that session. That one-time sign-in per device is what makes
-// the shared Sheet the actual source of truth across desktop and mobile.
+// at least once. After that, requestAccessToken({prompt:''}) can silently
+// re-issue a token (no popup) as long as this browser still has an active
+// Google session and previously-granted consent, which is what lets
+// attemptSilentAutoSync() in app.js keep syncing without asking again.
+//
+// The spreadsheet is the master record. Tabs:
+//   "Trades <year>"  — one tab per calendar year (keeps each tab a
+//                      manageable size while still letting Analytics pull
+//                      every year for historical comparison)
+//   "Accounts"        — every account, all years
+//   "Settings"        — synced preferences (currently just Daily Goal)
+//   "Tombstones"       — {type, id, deletedAt} rows recording every trade/
+//                      account ever deleted from any device, so a delete
+//                      actually removes the row from the sheet and from
+//                      every other device on their next sync, instead of
+//                      quietly reappearing.
 let gisTokenClient = null;
 let gisAccessToken = null;
 
@@ -138,7 +151,7 @@ async function ensureSpreadsheet(token, settings, onStatus) {
     const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ properties: { title: `TradeGenie Journal — ${new Date().toLocaleDateString()}` } }),
+      body: JSON.stringify({ properties: { title: `TradeGenie Journal — Master` } }),
     });
     if (!createRes.ok) throw new Error(`Could not create spreadsheet (${createRes.status}). Check the OAuth Client ID and that the Sheets API is enabled.`);
     const created = await createRes.json();
@@ -149,96 +162,348 @@ async function ensureSpreadsheet(token, settings, onStatus) {
   return { sheetId, sheetUrl };
 }
 
-async function writeTradesToSheet(token, sheetId, tradeList) {
-  const rows = tradesToRows(tradeList);
-  const range = `A1:${String.fromCharCode(64 + rows[0].length)}${Math.max(rows.length, 2)}`;
-  const updateRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
-    {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ range, majorDimension: 'ROWS', values: rows }),
-    }
-  );
-  if (!updateRes.ok) throw new Error(`Could not write to spreadsheet (${updateRes.status}). Your saved Sheet ID may be invalid or you no longer have edit access.`);
+// ---- tab-level plumbing ----
+
+function columnLetter(n) {
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
 }
 
-async function readTradesFromSheet(token, sheetId) {
-  const range = `A1:${String.fromCharCode(64 + TRADE_EXPORT_HEADER.length)}100000`;
+function a1TabRange(title, colCount, rowCount) {
+  const safeTitle = title.replace(/'/g, "''");
+  return `'${safeTitle}'!A1:${columnLetter(colCount)}${rowCount}`;
+}
+
+async function getSpreadsheetTabs(token, sheetId) {
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties(sheetId,title)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error(`Could not read spreadsheet structure (${res.status}). Check the Sheet ID and that you still have access to it.`);
+  const data = await res.json();
+  return (data.sheets || []).map(s => s.properties);
+}
+
+// Creates the tab if it doesn't already exist (idempotent — pass the tab
+// list you already fetched so repeated calls don't refetch).
+async function ensureTab(token, sheetId, title, existingTabs) {
+  if (existingTabs.some(p => p.title === title)) return;
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }),
+  });
+  if (!res.ok) throw new Error(`Could not create sheet tab "${title}" (${res.status}).`);
+  const data = await res.json();
+  existingTabs.push(data.replies[0].addSheet.properties);
+}
+
+async function readTabValues(token, sheetId, title, colCount) {
+  const range = a1TabRange(title, colCount, 200000);
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  if (!res.ok) throw new Error(`Could not read the spreadsheet (${res.status}). Check the Sheet ID and that you have access to it.`);
+  if (!res.ok) throw new Error(`Could not read tab "${title}" (${res.status}).`);
   const data = await res.json();
-  return rowsToTrades(data.values || []);
+  return data.values || [];
 }
 
-async function exportTradesToGoogleSheets(tradeList, settings, { onStatus } = {}) {
-  const clientId = (settings.googleClientId || '').trim();
-  if (!clientId) {
-    throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
+// Clears the whole tab before writing so rows removed locally (deletions,
+// or a dataset that just got smaller) don't leave stale rows behind.
+async function writeTabValues(token, sheetId, title, rows) {
+  const colCount = rows[0] ? rows[0].length : 1;
+  const clearRange = a1TabRange(title, colCount, 200000);
+  await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(clearRange)}:clear`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!rows.length) return;
+  const writeRange = a1TabRange(title, colCount, rows.length);
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(writeRange)}?valueInputOption=USER_ENTERED`,
+    {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ range: writeRange, majorDimension: 'ROWS', values: rows }),
+    }
+  );
+  if (!res.ok) throw new Error(`Could not write tab "${title}" (${res.status}). Your saved Sheet ID may be invalid or you no longer have edit access.`);
+}
+
+// ---- generic row <-> object helpers (used for Accounts/Settings/Tombstones) ----
+
+function objectsToRows(list, columns, header) {
+  const rows = list.map(o => columns.map(c => o[c] === undefined || o[c] === null ? '' : o[c]));
+  return [header, ...rows];
+}
+
+function rowsToObjects(values, columns, header) {
+  if (!values || values.length < 2) return [];
+  const headerRow = values[0].map(h => String(h || '').trim().toLowerCase());
+  const colIndex = header.map(h => headerRow.indexOf(h.toLowerCase()));
+  const out = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (!row || !row.length) continue;
+    const o = {};
+    columns.forEach((key, ci) => {
+      const idx = colIndex[ci];
+      o[key] = idx === -1 || idx >= row.length ? '' : row[idx];
+    });
+    if (Object.values(o).every(v => v === '')) continue;
+    out.push(o);
   }
+  return out;
+}
+
+// ---- trades: per-year tabs ----
+
+const TRADES_TAB_RE = /^Trades (\d{4})$/;
+function tradesTabName(year) { return `Trades ${year}`; }
+function yearOfTrade(t) { return (t.date || '').slice(0, 4) || String(new Date().getFullYear()); }
+
+function groupTradesByYear(tradeList) {
+  const byYear = {};
+  tradeList.forEach(t => {
+    const y = yearOfTrade(t);
+    (byYear[y] = byYear[y] || []).push(t);
+  });
+  return byYear;
+}
+
+async function readAllTradesFromSheet(token, sheetId, existingTabs) {
+  const yearTabs = existingTabs.filter(p => TRADES_TAB_RE.test(p.title));
+  const results = await Promise.all(yearTabs.map(p => readTabValues(token, sheetId, p.title, TRADE_EXPORT_HEADER.length)));
+  return results.flatMap(rowsToTrades);
+}
+
+async function writeAllTradesToSheet(token, sheetId, tradeList, existingTabs) {
+  const byYear = groupTradesByYear(tradeList);
+  const years = Object.keys(byYear);
+  for (const year of years) {
+    await ensureTab(token, sheetId, tradesTabName(year), existingTabs);
+  }
+  // Also clear out any year tab that no longer has any trades (e.g. the
+  // last trade from a year was deleted), so it doesn't keep stale rows.
+  const emptyYearTabs = existingTabs.filter(p => TRADES_TAB_RE.test(p.title) && !byYear[p.title.match(TRADES_TAB_RE)[1]]);
+  for (const year of years) {
+    const rows = tradesToRows(byYear[year].sort((a, b) => (b.date || '').localeCompare(a.date || '')));
+    await writeTabValues(token, sheetId, tradesTabName(year), rows);
+  }
+  for (const p of emptyYearTabs) {
+    await writeTabValues(token, sheetId, p.title, [TRADE_EXPORT_HEADER]);
+  }
+}
+
+// ---- accounts ----
+
+const ACCOUNTS_TAB = 'Accounts';
+const ACCOUNT_COLUMNS = ['id', 'name', 'broker', 'updatedAt'];
+const ACCOUNT_HEADER = ['Account ID', 'Name', 'Broker', 'Updated At'];
+
+async function readAccountsFromSheet(token, sheetId, existingTabs) {
+  if (!existingTabs.some(p => p.title === ACCOUNTS_TAB)) return [];
+  const values = await readTabValues(token, sheetId, ACCOUNTS_TAB, ACCOUNT_HEADER.length);
+  return rowsToObjects(values, ACCOUNT_COLUMNS, ACCOUNT_HEADER).filter(a => a.id && a.name);
+}
+
+async function writeAccountsToSheet(token, sheetId, accountList, existingTabs) {
+  await ensureTab(token, sheetId, ACCOUNTS_TAB, existingTabs);
+  await writeTabValues(token, sheetId, ACCOUNTS_TAB, objectsToRows(accountList, ACCOUNT_COLUMNS, ACCOUNT_HEADER));
+}
+
+// ---- settings (only non-secret preferences — API keys never leave this device) ----
+
+const SETTINGS_TAB = 'Settings';
+const SETTINGS_COLUMNS = ['key', 'value', 'updatedAt'];
+const SETTINGS_HEADER = ['Key', 'Value', 'Updated At'];
+
+async function readSyncedSettingsFromSheet(token, sheetId, existingTabs) {
+  if (!existingTabs.some(p => p.title === SETTINGS_TAB)) return {};
+  const values = await readTabValues(token, sheetId, SETTINGS_TAB, SETTINGS_HEADER.length);
+  const rows = rowsToObjects(values, SETTINGS_COLUMNS, SETTINGS_HEADER);
+  const out = {};
+  rows.forEach(r => { out[r.key] = { value: r.value, updatedAt: r.updatedAt }; });
+  return out;
+}
+
+async function writeSyncedSettingsToSheet(token, sheetId, settingsMap, existingTabs) {
+  await ensureTab(token, sheetId, SETTINGS_TAB, existingTabs);
+  const rows = Object.entries(settingsMap).map(([key, v]) => ({ key, value: v.value, updatedAt: v.updatedAt }));
+  await writeTabValues(token, sheetId, SETTINGS_TAB, objectsToRows(rows, SETTINGS_COLUMNS, SETTINGS_HEADER));
+}
+
+// ---- tombstones ----
+
+const TOMBSTONES_TAB = 'Tombstones';
+const TOMBSTONE_COLUMNS = ['type', 'id', 'deletedAt'];
+const TOMBSTONE_HEADER = ['Type', 'ID', 'Deleted At'];
+
+async function readTombstonesFromSheet(token, sheetId, existingTabs) {
+  if (!existingTabs.some(p => p.title === TOMBSTONES_TAB)) return [];
+  const values = await readTabValues(token, sheetId, TOMBSTONES_TAB, TOMBSTONE_HEADER.length);
+  return rowsToObjects(values, TOMBSTONE_COLUMNS, TOMBSTONE_HEADER).filter(t => t.id && t.type);
+}
+
+async function writeTombstonesToSheet(token, sheetId, tombstoneList, existingTabs) {
+  await ensureTab(token, sheetId, TOMBSTONES_TAB, existingTabs);
+  await writeTabValues(token, sheetId, TOMBSTONES_TAB, objectsToRows(tombstoneList, TOMBSTONE_COLUMNS, TOMBSTONE_HEADER));
+}
+
+function mergeTombstones(a, b) {
+  const map = new Map();
+  [...a, ...b].forEach(ts => {
+    if (!ts.id || !ts.type) return;
+    const key = ts.type + '::' + ts.id;
+    const existing = map.get(key);
+    if (!existing || (ts.deletedAt || '') < (existing.deletedAt || '')) map.set(key, ts);
+  });
+  return Array.from(map.values());
+}
+
+// ---- merge with conflict detection ----
+//
+// A trade/account counts as a genuine CONFLICT (not just a simple update)
+// when both the local copy and the remote copy changed since the last time
+// this device successfully synced (per syncSnapshot). In that case the
+// newest updatedAt still wins automatically (so sync always completes and
+// nothing blocks), but the conflict is reported back so the UI can show
+// exactly what differed and let the user override the auto-resolution.
+function mergeWithConflictDetection(localList, remoteList, tombstoneIds, snapshotMap, describeFn) {
+  const byId = new Map();
+  localList.forEach(o => { if (!tombstoneIds.has(o.id)) byId.set(o.id, o); });
+  const conflicts = [];
+  let added = 0, updated = 0;
+
+  remoteList.forEach(ro => {
+    if (tombstoneIds.has(ro.id)) return;
+    const lo = byId.get(ro.id);
+    if (!lo) { byId.set(ro.id, ro); added++; return; }
+    if (JSON.stringify(lo) === JSON.stringify(ro)) return;
+
+    const snapAt = snapshotMap[ro.id];
+    const remoteWins = (ro.updatedAt || '') > (lo.updatedAt || '');
+    if (snapAt && (lo.updatedAt || '') > snapAt && (ro.updatedAt || '') > snapAt) {
+      conflicts.push({
+        id: ro.id,
+        local: lo,
+        remote: ro,
+        kept: remoteWins ? 'remote' : 'local',
+        description: describeFn ? describeFn(lo, ro) : `${ro.id}`,
+      });
+    }
+    if (remoteWins) { byId.set(ro.id, ro); updated++; }
+  });
+
+  return { merged: Array.from(byId.values()), added, updated, conflicts };
+}
+
+function describeTradeConflict(local, remote) {
+  const fields = ['symbol', 'side', 'entry', 'exit', 'qty', 'stop', 'commission', 'account', 'notes'];
+  const diffs = fields.filter(f => String(local[f] ?? '') !== String(remote[f] ?? ''))
+    .map(f => `${f}: this device "${local[f] ?? ''}" vs. sheet "${remote[f] ?? ''}"`);
+  return { title: `${local.symbol || remote.symbol} · ${local.date || remote.date}`, diffs };
+}
+
+function describeAccountConflict(local, remote) {
+  const fields = ['name', 'broker'];
+  const diffs = fields.filter(f => String(local[f] ?? '') !== String(remote[f] ?? ''))
+    .map(f => `${f}: this device "${local[f] ?? ''}" vs. sheet "${remote[f] ?? ''}"`);
+  return { title: `Account: ${local.name || remote.name}`, diffs };
+}
+
+// ---- top-level operations ----
+
+// Push-only: overwrites the sheet with exactly what's on this device
+// (all years, accounts, settings, tombstones). Use "Sync Now" instead when
+// you want changes from other devices pulled in too.
+async function exportTradesToGoogleSheets(state, settings, { onStatus } = {}) {
+  const clientId = (settings.googleClientId || '').trim();
+  if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
   const token = await getGoogleAccessToken(clientId, true);
   onStatus && onStatus('Signed in. Preparing spreadsheet...');
   const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
-  onStatus && onStatus('Writing trade data...');
-  await writeTradesToSheet(token, sheetId, tradeList);
+  const existingTabs = await getSpreadsheetTabs(token, sheetId);
+
+  onStatus && onStatus('Writing trades, accounts, and settings...');
+  await writeAllTradesToSheet(token, sheetId, state.trades, existingTabs);
+  await writeAccountsToSheet(token, sheetId, state.accounts, existingTabs);
+  await writeSyncedSettingsToSheet(token, sheetId, state.settingsMap, existingTabs);
+  await writeTombstonesToSheet(token, sheetId, state.tombstones, existingTabs);
+
   return { sheetId, sheetUrl };
 }
 
-// Merges a remote trade set (pulled from Sheets) into a local one, keyed by
-// trade id, newest updatedAt wins on conflicts. Trades that exist only
-// locally are kept as-is (they'll go up on the next push). Note: this does
-// not sync deletions — deleting a trade on one device and then pulling from
-// another will bring it back, since there's no tombstone record.
-function mergeTradeSets(localTrades, remoteTrades) {
-  const byId = new Map();
-  localTrades.forEach(t => byId.set(t.id, t));
-  let added = 0, updated = 0;
-  remoteTrades.forEach(rt => {
-    const lt = byId.get(rt.id);
-    if (!lt) {
-      byId.set(rt.id, rt);
-      added++;
-    } else if ((rt.updatedAt || '') > (lt.updatedAt || '')) {
-      byId.set(rt.id, rt);
-      updated++;
-    }
-  });
-  return { merged: Array.from(byId.values()), added, updated };
-}
-
-async function importTradesFromGoogleSheets(settings, { onStatus } = {}) {
-  const clientId = (settings.googleClientId || '').trim();
-  const sheetId = (settings.googleSheetId || '').trim();
-  if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first.');
-  if (!sheetId) throw new Error('No Sheet ID saved yet — run a Sync (or Export) once first to create/link a sheet.');
-  const token = await getGoogleAccessToken(clientId, true);
-  onStatus && onStatus('Reading trade data from Google Sheets...');
-  return readTradesFromSheet(token, sheetId);
-}
-
-// Full two-way sync: pull remote rows, merge with local trades (newest wins
-// per trade), then push the merged set back so the Sheet and this device
-// end up consistent. Run this on every device you use — the first time on
-// a new device it will require a Google sign-in popup.
-async function syncTradesWithGoogleSheets(localTrades, settings, { onStatus, interactive = true } = {}) {
+// Full two-way sync: pull every year's trades + accounts + settings +
+// tombstones, merge with local state (applying deletions both ways and
+// flagging genuine conflicts), then push the merged result back so the
+// sheet and this device converge. Run this on every device you use — the
+// first time on a new device it may require a Google sign-in popup.
+async function syncAllWithGoogleSheets(localState, settings, { onStatus, interactive = true } = {}) {
   const clientId = (settings.googleClientId || '').trim();
   if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
   const token = await getGoogleAccessToken(clientId, interactive);
   onStatus && onStatus('Signed in. Preparing spreadsheet...');
   const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
+  const existingTabs = await getSpreadsheetTabs(token, sheetId);
 
-  onStatus && onStatus('Pulling trades from Google Sheets...');
-  const remoteTrades = await readTradesFromSheet(token, sheetId);
-  const { merged, added, updated } = mergeTradeSets(localTrades, remoteTrades);
-  merged.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  onStatus && onStatus('Pulling data from Google Sheets...');
+  const [remoteTrades, remoteAccounts, remoteSettingsMap, remoteTombstones] = await Promise.all([
+    readAllTradesFromSheet(token, sheetId, existingTabs),
+    readAccountsFromSheet(token, sheetId, existingTabs),
+    readSyncedSettingsFromSheet(token, sheetId, existingTabs),
+    readTombstonesFromSheet(token, sheetId, existingTabs),
+  ]);
 
-  onStatus && onStatus('Pushing merged trades back to Google Sheets...');
-  await writeTradesToSheet(token, sheetId, merged);
+  const mergedTombstones = mergeTombstones(localState.tombstones, remoteTombstones);
+  const tradeTombstoneIds = new Set(mergedTombstones.filter(t => t.type === 'trade').map(t => t.id));
+  const accountTombstoneIds = new Set(mergedTombstones.filter(t => t.type === 'account').map(t => t.id));
 
-  return { merged, sheetId, sheetUrl, added, updated };
+  const tradeResult = mergeWithConflictDetection(
+    localState.trades, remoteTrades, tradeTombstoneIds, localState.syncSnapshot.trades || {}, describeTradeConflict
+  );
+  const accountResult = mergeWithConflictDetection(
+    localState.accounts, remoteAccounts, accountTombstoneIds, localState.syncSnapshot.accounts || {}, describeAccountConflict
+  );
+
+  // Daily goal: single value, last-write-wins by updatedAt (no conflict list
+  // — it's one number, not worth a whole review UI).
+  let dailyGoal = localState.settingsMap.dailyGoal;
+  const remoteDailyGoal = remoteSettingsMap.dailyGoal;
+  if (remoteDailyGoal && (remoteDailyGoal.updatedAt || '') > (dailyGoal.updatedAt || '')) {
+    dailyGoal = remoteDailyGoal;
+  }
+
+  tradeResult.merged.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  onStatus && onStatus('Pushing merged data back to Google Sheets...');
+  await writeAllTradesToSheet(token, sheetId, tradeResult.merged, existingTabs);
+  await writeAccountsToSheet(token, sheetId, accountResult.merged, existingTabs);
+  await writeSyncedSettingsToSheet(token, sheetId, { dailyGoal }, existingTabs);
+  await writeTombstonesToSheet(token, sheetId, mergedTombstones, existingTabs);
+
+  const syncSnapshot = {
+    trades: Object.fromEntries(tradeResult.merged.map(t => [t.id, t.updatedAt])),
+    accounts: Object.fromEntries(accountResult.merged.map(a => [a.id, a.updatedAt])),
+  };
+
+  return {
+    sheetId, sheetUrl,
+    trades: tradeResult.merged,
+    accounts: accountResult.merged,
+    dailyGoal,
+    tombstones: mergedTombstones,
+    syncSnapshot,
+    added: tradeResult.added + accountResult.added,
+    updated: tradeResult.updated + accountResult.updated,
+    conflicts: [...tradeResult.conflicts, ...accountResult.conflicts],
+  };
 }
 
 // ---------- INTERACTIVE BROKERS CSV SYNC ----------
