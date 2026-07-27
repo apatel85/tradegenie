@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TradeGenie | AI Trading Journal</title>
-  <link rel="stylesheet" href="css/styles.css?v=9" />
+  <link rel="stylesheet" href="css/styles.css?v=10" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 </head>
 <body>
@@ -347,6 +347,7 @@
         <p class="settings-desc">The Google Sheet is the <strong>master record</strong>. "Sync Now" pulls in changes made elsewhere, merges them with this device (editing an existing trade updates that same row; deleting a trade removes it from the sheet too — deletions propagate to every device on their next sync), and pushes the result back. Trades are organized into one tab per year (e.g. "Trades 2026") so the sheet stays manageable, but the app always reads every year back in for full historical analysis — accounts and your Daily Goal sync too, in their own tabs. Run "Sync Now" on each device (desktop, mobile) to keep them lined up.</p>
         <p class="settings-desc">Requires a Google OAuth Client ID from your own <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud project</a> (Sheets API enabled, Web application type, this page's origin added to Authorized JavaScript origins). Your credentials stay in this browser only. <strong>Sign-in happens once per device</strong> — the first "Sync Now" click shows a Google popup; after that, this app tries a silent (no-popup) re-sync automatically each time you open it, for as long as your browser keeps that Google session active.</p>
         <p class="settings-desc"><strong>Conflicts:</strong> if the same trade or account was edited on two devices since your last sync, the newer edit wins automatically so sync always completes — but it's flagged below so you can review exactly what differed and pick the other version if the auto-pick was wrong.</p>
+        <p class="settings-desc"><strong>Asked to sign in every time you refresh?</strong> There's no backend here to hold a long-lived session, so silent reconnect depends entirely on your browser keeping Google's own sign-in state alive — the two most common blockers: (1) <strong>third-party cookies are blocked</strong> (Safari's default, Chrome moving that direction, Brave, or any Incognito/Private window) — Google's silent-check runs in a hidden iframe that needs those cookies, so try a normal window with third-party cookies allowed for accounts.google.com; (2) your <strong>Google Cloud OAuth consent screen is still in "Testing" status</strong> — publish it to "Production" (still free, no Google review needed for internal/personal use) for longer-lived, more reliable grants. If auto-reconnect fails, you'll see a note next to "Last synced" below — just click "Sync Now" again.</p>
         <div class="form-grid">
           <div class="form-group">
             <label>Google OAuth Client ID</label>
@@ -382,15 +383,16 @@
 
       <div class="card settings-card">
         <div class="card-header"><h3><i class="fa fa-magnifying-glass-chart"></i> Market Data (Symbol Lookup)</h3></div>
-        <p class="settings-desc">Powers the "Look Up" button on the Add Trade form: searches a symbol, shows the company/instrument name and exchange, and offers to fill Entry Price with the current live quote. <strong>Limitation:</strong> both providers below only expose the current real-time quote, not a historical price for a specific past date/time — free futures/options data with true point-in-time history isn't available without a paid provider, since exchanges license that data.</p>
+        <p class="settings-desc">Powers the "Look Up" button on the Add Trade form: searches a symbol, shows the company/instrument name and exchange, and offers to fill Entry Price with the current live quote. <strong>Limitation:</strong> none of these expose a historical price for a specific past date/time, only the current quote — genuinely free point-in-time futures/options data isn't available anywhere without a paid provider, since exchanges license that data.</p>
+        <p class="settings-desc"><strong>Futures/Future Options note:</strong> Twelve Data's free Basic plan does <em>not</em> include Futures/Commodities data — that requires their paid "Grow" plan or higher, so a free key will return "no data" for futures symbols, which is expected. If Twelve Data fails (or no key is set), Look Up automatically falls back to Yahoo Finance's unofficial, no-key endpoint (continuous futures like "ES", "CL", "GC" work best). That fallback is undocumented and best-effort — Yahoo may block direct browser requests entirely (no CORS headers), in which case it will show a clear error rather than silently failing.</p>
         <div class="form-grid">
           <div class="form-group">
             <label>Finnhub API Key <span class="label-hint">(stocks, forex, crypto)</span></label>
             <input type="text" id="set-finnhubKey" placeholder="Paste your free key — finnhub.io/register" />
           </div>
           <div class="form-group">
-            <label>Twelve Data API Key <span class="label-hint">(used for Futures / Future Options)</span></label>
-            <input type="text" id="set-twelveDataKey" placeholder="Paste your free key — twelvedata.com" />
+            <label>Twelve Data API Key <span class="label-hint">(optional — Futures/Future Options, paid plan required)</span></label>
+            <input type="text" id="set-twelveDataKey" placeholder="Paste your key — twelvedata.com" />
           </div>
         </div>
       </div>
@@ -534,11 +536,11 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="js/data.js?v=9"></script>
-  <script src="js/storage.js?v=9"></script>
-  <script src="js/goals.js?v=9"></script>
-  <script src="js/integrations.js?v=9"></script>
-  <script src="js/marketdata.js?v=9"></script>
-  <script src="js/app.js?v=9"></script>
+  <script src="js/data.js?v=10"></script>
+  <script src="js/storage.js?v=10"></script>
+  <script src="js/goals.js?v=10"></script>
+  <script src="js/integrations.js?v=10"></script>
+  <script src="js/marketdata.js?v=10"></script>
+  <script src="js/app.js?v=10"></script>
 </body>
 </html>

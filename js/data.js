@@ -1,8 +1,11 @@
-// Sample accounts (for multi-account tracking)
+// Sample accounts (for multi-account tracking). Stable "sample-" ids, same
+// idea as SAMPLE_TRADES below — these are demo-only placeholders that are
+// deliberately excluded from Google Sheets sync (see js/integrations.js)
+// so they never pollute a shared master sheet from a fresh device.
 const SAMPLE_ACCOUNTS = [
-  { id: 1, name: 'Main Brokerage', broker: 'Interactive Brokers' },
-  { id: 2, name: 'FTMO Challenge', broker: 'FTMO' },
-  { id: 3, name: 'Roth IRA', broker: 'Fidelity' },
+  { id: 'sample-acc-1', name: 'Main Brokerage', broker: 'Interactive Brokers' },
+  { id: 'sample-acc-2', name: 'FTMO Challenge', broker: 'FTMO' },
+  { id: 'sample-acc-3', name: 'Roth IRA', broker: 'Fidelity' },
 ];
 
 // Sample trade data

@@ -101,40 +101,68 @@ function csvEscape(val) {
 //                      every other device on their next sync, instead of
 //                      quietly reappearing.
 let gisTokenClient = null;
+let gisTokenClientId = null; // which Client ID gisTokenClient was built for
 let gisAccessToken = null;
 
 function gisReady() {
   return typeof google !== 'undefined' && google.accounts && google.accounts.oauth2;
 }
 
+// Google's own recommended pattern: build the token client once per Client
+// ID, then just reassign .callback and call requestAccessToken() again for
+// each subsequent request — rebuilding it every call (the old behavior
+// here) works too, but reusing it is what Google's docs show and rules out
+// any client-recreation edge cases as a source of "asks to sign in every
+// time" reports.
 function ensureGisTokenClient(clientId, onToken) {
   if (!gisReady()) {
     throw new Error('Google Identity Services script has not loaded yet. Check your connection and try again.');
   }
-  gisTokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: clientId,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    callback: (resp) => {
-      if (resp.error) {
-        onToken(null, resp);
-        return;
-      }
-      gisAccessToken = resp.access_token;
-      onToken(gisAccessToken, null);
-    },
-  });
+  if (!gisTokenClient || gisTokenClientId !== clientId) {
+    gisTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      callback: () => {}, // replaced per-request below
+    });
+    gisTokenClientId = clientId;
+  }
+  gisTokenClient.callback = (resp) => {
+    if (resp.error) { onToken(null, resp); return; }
+    gisAccessToken = resp.access_token;
+    onToken(gisAccessToken, null);
+  };
   return gisTokenClient;
 }
 
 // interactive=true may show a Google sign-in popup; interactive=false only
 // succeeds if this browser already has a live grant (used for silent
 // auto-sync on load, so we never surprise-popup the user).
+//
+// If silent requests keep failing (attemptSilentAutoSync in app.js needing
+// a fresh "Sync Now" click every page load instead of reconnecting on its
+// own), the two most common real causes — neither fixable in this app's
+// code, since there's no backend to hold a session — are:
+//   1. Third-party cookies blocked (Safari default, Chrome moving that
+//      direction, Brave, or any Incognito/Private window) — Google's
+//      silent-reauth check runs in a hidden iframe that depends on those
+//      cookies. Try a normal (non-private) window with third-party cookies
+//      allowed for accounts.google.com.
+//   2. The Google Cloud OAuth consent screen is in "Testing" publishing
+//      status — every popup shows a "Google hasn't verified this app"
+//      click-through, and Google's test-user grants can also be treated as
+//      shorter-lived than a Production app's. This is normal for a
+//      personal-use app in Testing and isn't a bug, just extra friction.
 function getGoogleAccessToken(clientId, interactive) {
   return new Promise((resolve, reject) => {
     try {
       const client = ensureGisTokenClient(clientId, (accessToken, err) => {
-        if (err || !accessToken) reject(new Error('Google sign-in was cancelled, failed, or requires interaction.'));
-        else resolve(accessToken);
+        if (err || !accessToken) {
+          reject(new Error(interactive
+            ? 'Google sign-in was cancelled or failed.'
+            : 'Silent reconnect failed (no popup shown) — likely third-party cookies are blocked, or this is a private/incognito window. Click "Sync Now" to reconnect.'));
+          return;
+        }
+        resolve(accessToken);
       });
       client.requestAccessToken({ prompt: gisAccessToken ? '' : (interactive ? 'consent' : '') });
     } catch (e) {
@@ -420,6 +448,12 @@ function describeAccountConflict(local, remote) {
 
 // ---- top-level operations ----
 
+// "sample-"-prefixed ids are the built-in onboarding demo data seeded on
+// every fresh device/browser (see js/data.js, js/app.js loadState()) — they
+// must never reach the shared sheet, or every new device you ever set up
+// would push its own copy of the demo trades into your real master record.
+function isRealId(id) { return !!id && !String(id).startsWith('sample-'); }
+
 // Push-only: overwrites the sheet with exactly what's on this device
 // (all years, accounts, settings, tombstones). Use "Sync Now" instead when
 // you want changes from other devices pulled in too.
@@ -431,9 +465,12 @@ async function exportTradesToGoogleSheets(state, settings, { onStatus } = {}) {
   const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
   const existingTabs = await getSpreadsheetTabs(token, sheetId);
 
+  const realTrades = state.trades.filter(t => isRealId(t.id));
+  const realAccounts = state.accounts.filter(a => isRealId(a.id));
+
   onStatus && onStatus('Writing trades, accounts, and settings...');
-  await writeAllTradesToSheet(token, sheetId, state.trades, existingTabs);
-  await writeAccountsToSheet(token, sheetId, state.accounts, existingTabs);
+  await writeAllTradesToSheet(token, sheetId, realTrades, existingTabs);
+  await writeAccountsToSheet(token, sheetId, realAccounts, existingTabs);
   await writeSyncedSettingsToSheet(token, sheetId, state.settingsMap, existingTabs);
   await writeTombstonesToSheet(token, sheetId, state.tombstones, existingTabs);
 
@@ -461,15 +498,21 @@ async function syncAllWithGoogleSheets(localState, settings, { onStatus, interac
     readTombstonesFromSheet(token, sheetId, existingTabs),
   ]);
 
+  // Exclude this device's still-untouched onboarding demo data from the
+  // merge entirely — it never gets pushed, and once real synced data comes
+  // back it naturally replaces the local demo trades/accounts too.
+  const localTrades = localState.trades.filter(t => isRealId(t.id));
+  const localAccounts = localState.accounts.filter(a => isRealId(a.id));
+
   const mergedTombstones = mergeTombstones(localState.tombstones, remoteTombstones);
   const tradeTombstoneIds = new Set(mergedTombstones.filter(t => t.type === 'trade').map(t => t.id));
   const accountTombstoneIds = new Set(mergedTombstones.filter(t => t.type === 'account').map(t => t.id));
 
   const tradeResult = mergeWithConflictDetection(
-    localState.trades, remoteTrades, tradeTombstoneIds, localState.syncSnapshot.trades || {}, describeTradeConflict
+    localTrades, remoteTrades, tradeTombstoneIds, localState.syncSnapshot.trades || {}, describeTradeConflict
   );
   const accountResult = mergeWithConflictDetection(
-    localState.accounts, remoteAccounts, accountTombstoneIds, localState.syncSnapshot.accounts || {}, describeAccountConflict
+    localAccounts, remoteAccounts, accountTombstoneIds, localState.syncSnapshot.accounts || {}, describeAccountConflict
   );
 
   // Daily goal: single value, last-write-wins by updatedAt (no conflict list

@@ -78,23 +78,38 @@ function migrateTradeIds(list) {
 function migrateAccountIds(list) {
   let changed = false;
   list.forEach(a => {
-    if (!a.id || typeof a.id !== 'string') { a.id = generateSyncId(); changed = true; }
+    if (!a.id || typeof a.id !== 'string') {
+      // Retroactively re-tag the original untouched demo accounts (old
+      // numeric ids 1/2/3) as "sample-" so they get excluded from sync
+      // instead of being pushed to the shared sheet as a numeric-UUID mixup.
+      const seedMatch = SAMPLE_ACCOUNTS.find(s => s.id === `sample-acc-${a.id}` && s.name === a.name && s.broker === a.broker);
+      a.id = seedMatch ? seedMatch.id : generateSyncId();
+      changed = true;
+    }
     if (!a.updatedAt) { a.updatedAt = new Date().toISOString(); changed = true; }
   });
   return changed;
 }
 
+// Demo/first-run placeholder data uses stable "sample-" ids and is never
+// synced to Google Sheets (see js/integrations.js) — this is what stops a
+// freshly-set-up device from pushing its onboarding demo trades/accounts
+// into your real shared spreadsheet.
+function seedSampleAccounts() {
+  return SAMPLE_ACCOUNTS.map(a => ({ ...a, updatedAt: new Date().toISOString() }));
+}
+
 function loadState() {
   if (isFirstRun()) {
     trades = [...SAMPLE_TRADES];
-    accounts = SAMPLE_ACCOUNTS.map(a => ({ ...a, id: generateSyncId(), updatedAt: new Date().toISOString() }));
+    accounts = seedSampleAccounts();
     settings = { ...DEFAULT_SETTINGS };
     tombstones = [];
     syncSnapshot = { trades: {}, accounts: {} };
     persistAll();
   } else {
     trades = loadTrades() || [...SAMPLE_TRADES];
-    accounts = loadAccounts() || SAMPLE_ACCOUNTS.map(a => ({ ...a, id: generateSyncId(), updatedAt: new Date().toISOString() }));
+    accounts = loadAccounts() || seedSampleAccounts();
     settings = loadSettings();
     tombstones = loadTombstones();
     syncSnapshot = loadSyncSnapshot();
@@ -430,8 +445,14 @@ function ensureAccountsForTrades(tradeList) {
 function renderLastSyncStatus() {
   const el = document.getElementById('sheetsLastSync');
   if (!el) return;
-  el.textContent = settings.lastSyncedAt ? `Last synced: ${new Date(settings.lastSyncedAt).toLocaleString()}` : '';
-  el.className = 'settings-status';
+  const lastSyncedText = settings.lastSyncedAt ? `Last synced: ${new Date(settings.lastSyncedAt).toLocaleString()}` : '';
+  if (settings.lastSilentSyncError) {
+    el.textContent = `${lastSyncedText ? lastSyncedText + ' — ' : ''}Auto-reconnect failed on this browser (${settings.lastSilentSyncError}). Click "Sync Now" to reconnect.`;
+    el.className = 'settings-status pending';
+  } else {
+    el.textContent = lastSyncedText;
+    el.className = 'settings-status';
+  }
 }
 
 function refreshAllViews() {
@@ -509,6 +530,10 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
       settings.dailyGoalUpdatedAt = result.dailyGoal.updatedAt || settings.dailyGoalUpdatedAt;
     }
     ensureAccountsForTrades(trades);
+    // Guard against the very-first-sync-ever edge case: this device's demo
+    // accounts are excluded from sync, and if the sheet was also empty
+    // there'd be nothing left to select in the trade form.
+    if (!accounts.length) accounts.push({ id: generateSyncId(), name: 'Main Account', broker: 'Manual', updatedAt: new Date().toISOString() });
     persistTrades();
     persistAccounts();
     persistTombstones();
@@ -517,6 +542,7 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
     settings.googleSheetUrl = result.sheetUrl;
     settings.googleAutoSync = true;
     settings.lastSyncedAt = new Date().toISOString();
+    settings.lastSilentSyncError = '';
     persistSettings();
     document.getElementById('set-googleSheetId').value = result.sheetId;
     refreshAllViews();
@@ -528,7 +554,18 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
       status.className = result.conflicts.length ? 'settings-status pending' : 'settings-status success';
     }
   } catch (err) {
-    if (!silent) { status.textContent = err.message || 'Sync failed.'; status.className = 'settings-status error'; }
+    if (!silent) {
+      status.textContent = err.message || 'Sync failed.';
+      status.className = 'settings-status error';
+    } else {
+      // Silent auto-sync failing is expected the very first time on a new
+      // device/browser (no live Google grant yet), but if it keeps failing
+      // every reload it's worth a visible-but-quiet hint rather than the
+      // user wondering why they're asked to sign in again each time.
+      settings.lastSilentSyncError = err.message || 'Silent reconnect failed.';
+      persistSettings();
+      renderLastSyncStatus();
+    }
   }
 }
 
