@@ -12,8 +12,8 @@ function groupPnlByDate(tradeList) {
 }
 
 function fmtMoney(n) {
-  const sign = n < 0 ? '-' : '';
-  return `${sign}$${Math.abs(n).toFixed(2)}`;
+  const abs = Math.abs(n).toFixed(2);
+  return n < 0 ? `($${abs})` : `$${abs}`;
 }
 
 /**
@@ -72,12 +72,12 @@ function computeGoalAssessment(tradeList, dailyGoal, todayDate) {
     } else if (reserve > 0 && reserve >= Math.abs(todayPnl)) {
       tone = 'encourage';
       title = '🛡️ Still on track';
-      message = `Today is down ${fmtMoney(todayPnl)}, but you've banked ${fmtMoney(reserve)} of extra reserve above your goal pace recently. `
+      message = `Today is down ${fmtMoney(Math.abs(todayPnl))}, but you've banked ${fmtMoney(reserve)} of extra reserve above your goal pace recently. `
         + `Net-net you're still on track. There's no need to force trades to make today "green" — the bigger trend is intact.`;
     } else {
       tone = 'warning';
       title = '⚠️ Avoid revenge trading';
-      message = `Today is down ${fmtMoney(todayPnl)} with no cushion banked above your goal pace. This is the highest-risk moment for a revenge trade. `
+      message = `Today is down ${fmtMoney(Math.abs(todayPnl))} with no cushion banked above your goal pace. This is the highest-risk moment for a revenge trade. `
         + `Consider stopping for the day, stepping away from the screen, and coming back with a clear head tomorrow. Protecting capital beats forcing it back.`;
     }
   } else {

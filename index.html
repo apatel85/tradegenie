@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TradeGenie | AI Trading Journal</title>
-  <link rel="stylesheet" href="css/styles.css?v=7" />
+  <link rel="stylesheet" href="css/styles.css?v=8" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 </head>
 <body>
@@ -53,7 +53,7 @@
         <span class="date-badge" id="currentDate"></span>
       </div>
       <div class="stats-grid">
-        <div class="stat-card green">
+        <div class="stat-card">
           <div class="stat-label">Net P&L</div>
           <div class="stat-value" id="stat-pnl">$0.00</div>
           <div class="stat-sub" id="stat-pnl-sub">0 closed trades</div>
@@ -68,7 +68,7 @@
           <div class="stat-value" id="stat-pf">0.00</div>
           <div class="stat-sub">Target: &gt; 1.5</div>
         </div>
-        <div class="stat-card orange">
+        <div class="stat-card">
           <div class="stat-label">Avg R-Multiple</div>
           <div class="stat-value" id="stat-avgr">0.00R</div>
           <div class="stat-sub" id="stat-open-sub">0 open positions</div>
@@ -166,8 +166,8 @@
       <div class="stats-grid">
         <div class="stat-card green"><div class="stat-label">Total Trades</div><div class="stat-value" id="an-total">0</div></div>
         <div class="stat-card blue"><div class="stat-label">Open Positions</div><div class="stat-value" id="an-open">0</div></div>
-        <div class="stat-card purple"><div class="stat-label">Max Drawdown</div><div class="stat-value" id="an-drawdown">$0.00</div></div>
-        <div class="stat-card orange"><div class="stat-label">Best Trade</div><div class="stat-value" id="an-best">$0.00</div></div>
+        <div class="stat-card"><div class="stat-label">Max Drawdown</div><div class="stat-value" id="an-drawdown">$0.00</div></div>
+        <div class="stat-card"><div class="stat-label">Best Trade</div><div class="stat-value" id="an-best">$0.00</div></div>
       </div>
       <div class="dashboard-grid">
         <div class="card">
@@ -378,6 +378,17 @@
         <div id="ibkrStatus" class="settings-status"></div>
       </div>
 
+      <div class="card settings-card">
+        <div class="card-header"><h3><i class="fa fa-magnifying-glass-chart"></i> Market Data (Symbol Lookup)</h3></div>
+        <p class="settings-desc">Powers the "Look Up" button on the Add Trade form: searches a symbol, shows the company/instrument name and exchange, and offers to fill Entry Price with the current live quote. Uses <a href="https://finnhub.io/register" target="_blank" rel="noopener">Finnhub's</a> free API (no credit card required) — paste your API key below. <strong>Limitation:</strong> the free tier only exposes the current real-time quote, not a historical price for a specific past date/time, so this is most accurate when you look a symbol up while entering a trade live, not when backfilling an old one.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Finnhub API Key</label>
+            <input type="text" id="set-finnhubKey" placeholder="Paste your free API key" />
+          </div>
+        </div>
+      </div>
+
       <div class="card settings-card danger-card">
         <div class="card-header"><h3><i class="fa fa-triangle-exclamation"></i> Reset Data</h3></div>
         <p class="settings-desc">Permanently clears all trades, accounts, and settings from this browser, leaving a completely blank journal so you can start fresh.</p>
@@ -395,19 +406,23 @@
       </div>
       <div class="modal-body">
         <div class="form-grid">
-          <div class="form-group">
+          <div class="form-group full-width">
             <label>Symbol *</label>
-            <input type="text" id="f-symbol" placeholder="AAPL" required />
+            <div class="symbol-lookup-row">
+              <input type="text" id="f-symbol" placeholder="AAPL" required />
+              <button type="button" class="btn-outline" id="lookupSymbolBtn"><i class="fa fa-magnifying-glass"></i> Look Up</button>
+            </div>
+            <div id="symbolLookupResult" class="symbol-lookup-result"></div>
           </div>
           <div class="form-group">
             <label>Date *</label>
             <input type="date" id="f-date" required />
           </div>
           <div class="form-group">
-            <label>Side</label>
+            <label id="sideLabel">Side</label>
             <select id="f-side">
-              <option value="long">Long</option>
-              <option value="short">Short</option>
+              <option id="sideOptLong" value="long">Long</option>
+              <option id="sideOptShort" value="short">Short</option>
             </select>
           </div>
           <div class="form-group">
@@ -430,12 +445,23 @@
               <option value="crypto">Crypto</option>
             </select>
           </div>
+          <div class="form-group" id="optionTypeGroup" style="display:none">
+            <label>Put / Call</label>
+            <select id="f-optionType">
+              <option value="call">Call</option>
+              <option value="put">Put</option>
+            </select>
+          </div>
+          <div class="form-group" id="strikeGroup" style="display:none">
+            <label>Strike Price</label>
+            <input type="number" id="f-strike" placeholder="0.00" step="0.01" />
+          </div>
           <div class="form-group" id="tickValueGroup" style="display:none">
             <label>Tick Value <span class="label-hint">(every 1 point = $x)</span></label>
             <input type="number" id="f-tickValue" placeholder="1.00" step="0.01" value="1" />
           </div>
           <div class="form-group">
-            <label>Entry Price *</label>
+            <label>Entry Price * <span class="label-hint">(option/future: premium per unit)</span></label>
             <input type="number" id="f-entry" placeholder="0.00" step="0.01" required />
           </div>
           <div class="form-group">
@@ -449,6 +475,10 @@
           <div class="form-group">
             <label>Exit Time <span class="label-hint">(actual time, auto-filled)</span></label>
             <input type="time" id="f-exitTime" step="1" />
+          </div>
+          <div class="form-group">
+            <label>Commission <span class="label-hint">(total fees, subtracted from P&L)</span></label>
+            <input type="number" id="f-commission" placeholder="0.00" step="0.01" value="0" />
           </div>
           <div class="form-group">
             <label>Shares/Contracts</label>
@@ -498,10 +528,11 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="js/data.js?v=7"></script>
-  <script src="js/storage.js?v=7"></script>
-  <script src="js/goals.js?v=7"></script>
-  <script src="js/integrations.js?v=7"></script>
-  <script src="js/app.js?v=7"></script>
+  <script src="js/data.js?v=8"></script>
+  <script src="js/storage.js?v=8"></script>
+  <script src="js/goals.js?v=8"></script>
+  <script src="js/integrations.js?v=8"></script>
+  <script src="js/marketdata.js?v=8"></script>
+  <script src="js/app.js?v=8"></script>
 </body>
 </html>

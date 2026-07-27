@@ -37,6 +37,7 @@ tradegenie/
 │   ├── storage.js      # localStorage persistence (trades, accounts, settings)
 │   ├── goals.js         # Daily goal assessment + behavioral feedback engine
 │   ├── integrations.js  # Google Sheets two-way sync + Interactive Brokers CSV sync
+│   ├── marketdata.js    # Finnhub symbol search / company profile / live quote
 │   └── app.js          # All app logic, event handlers, renderers
 └── BLUEPRINT.md        # This document
 ```
@@ -64,6 +65,10 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 - **Open positions**: Exit Price can be left blank to log a trade as an open position (shown as an "OPEN" badge, excluded from win rate/P&L/profit factor); editing the trade later to fill in an exit price closes it and computes P&L/R
 - **Actual entry/exit timestamps**: Entry Time and Exit Time (HH:MM:SS) are auto-filled with the real wall-clock time when a trade is opened/closed (editable if backfilling), stored and shown alongside the date in the Journal
 - **Security type**: Stock, Options, Futures, Future Options, or Crypto, selected per trade. Options and Futures/Future Options reveal a "Tick Value" field (every 1 point = $x, defaults to $1) that drives the P&L formula — stock/crypto use price-diff × qty; options use price-diff × qty × 100 × tick value; futures/future options use price-diff × qty × tick value. A matching "Security" filter and column are in the Journal, and Interactive Brokers CSV import auto-detects the security type from the broker's AssetClass column
+- **Options/Future Options details**: Put/Call and Strike Price fields (informational — P&L is driven entirely by premium entry/exit price, which already prices in the call/put payoff, so strike doesn't feed the formula). Side relabels to Buy/Sell for these instruments; "Buy" (long) and "Sell" (short/write) reuse the same price-diff formula as stock long/short, since buying-to-open vs. selling-to-open is exactly a long/short position on the premium
+- **Commission**: optional per-trade fee, subtracted from the gross P&L to get the net P&L/R shown everywhere (risk-amount for R stays gross, since commission isn't part of planned risk). Interactive Brokers import reads the broker's commission column and reconstructs it proportionally across FIFO-matched partial fills
+- **Signed money formatting**: `formatSignedMoney()`/`formatSignedR()` in app.js are the single source of truth for coloring/parenthesizing P&L everywhere (dashboard, analytics, journal, accounts, goal card) — losses render red and in parentheses (e.g. `($3,000.00)`), gains green with a `+`
+- **Market data lookup**: "Look Up" button on the Add Trade form (js/marketdata.js) queries Finnhub's free API (user-supplied key, Settings > Market Data) for company name/exchange and the current live quote, with a one-click "Use as Entry Price" fill. Free tier only exposes the current quote, not a historical price for a past trade date
 
 ### 4.3 Analytics
 - **4 stat cards**: Total Trades, Avg Hold Time, Max Drawdown, Best Trade

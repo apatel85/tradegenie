@@ -26,6 +26,33 @@ const navItems = document.querySelectorAll('.nav-item[data-page]');
 function isClosedTrade(t) { return t.pnl !== null && t.pnl !== undefined; }
 function closedTrades() { return trades.filter(isClosedTrade); }
 
+// Accounting-style formatting for signed dollar amounts: losses in red and
+// parentheses (e.g. "($3,000.00)"), gains in green with a "+", zero neutral.
+// Returns { text, color } — callers set textContent + style.color from it.
+function formatSignedMoney(amount) {
+  const n = Number(amount) || 0;
+  const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n < 0) return { text: `($${abs})`, color: 'var(--red)' };
+  if (n > 0) return { text: `+$${abs}`, color: 'var(--green)' };
+  return { text: `$${abs}`, color: 'var(--text)' };
+}
+
+function formatSignedR(value) {
+  const n = Number(value) || 0;
+  const abs = Math.abs(n).toFixed(2);
+  if (n < 0) return { text: `(${abs}R)`, color: 'var(--red)' };
+  if (n > 0) return { text: `+${abs}R`, color: 'var(--green)' };
+  return { text: `${abs}R`, color: 'var(--text)' };
+}
+
+// Applies formatSignedMoney()/formatSignedR() to an element's text + color.
+function setSignedText(elId, formatted) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.textContent = formatted.text;
+  el.style.color = formatted.color;
+}
+
 // STATE LOAD / PERSIST
 
 // Older local data may have numeric/missing ids or no updatedAt — backfill
@@ -37,6 +64,9 @@ function migrateTradeIds(list) {
     if (!t.updatedAt) { t.updatedAt = (t.date ? t.date + 'T00:00:00.000Z' : new Date().toISOString()); changed = true; }
     if (!t.securityType) { t.securityType = 'stock'; changed = true; }
     if (!t.tickValue) { t.tickValue = 1; changed = true; }
+    if (t.commission === undefined || t.commission === null) { t.commission = 0; changed = true; }
+    if (t.optionType === undefined) { t.optionType = ''; changed = true; }
+    if (t.strike === undefined) { t.strike = null; changed = true; }
   });
   return changed;
 }
@@ -140,7 +170,8 @@ function setupEventListeners() {
   document.getElementById('closeModal').addEventListener('click', closeModal);
   document.getElementById('cancelModal').addEventListener('click', closeModal);
   document.getElementById('saveTradeBtn').addEventListener('click', saveTrade);
-  document.getElementById('f-securityType').addEventListener('change', toggleTickValueField);
+  document.getElementById('f-securityType').addEventListener('change', updateSecurityDependentFields);
+  document.getElementById('lookupSymbolBtn').addEventListener('click', handleSymbolLookup);
   // Filters
   document.getElementById('searchTrades').addEventListener('input', renderJournal);
   document.getElementById('filterResult').addEventListener('change', renderJournal);
@@ -165,6 +196,11 @@ function setupEventListeners() {
   document.getElementById('exportCsvBtn').addEventListener('click', () => exportTradesToCSV(trades));
   // Settings: Interactive Brokers
   document.getElementById('ibkrImportBtn').addEventListener('click', handleIBKRImport);
+  // Settings: market data
+  document.getElementById('set-finnhubKey').addEventListener('change', () => {
+    settings.finnhubKey = document.getElementById('set-finnhubKey').value.trim();
+    persistSettings();
+  });
   // Settings: reset
   document.getElementById('resetDataBtn').addEventListener('click', handleResetData);
 }
@@ -255,7 +291,7 @@ function renderAccountsPage() {
         <button class="icon-btn del" onclick="deleteAccount(${a.id})" title="Delete Account"><i class="fa fa-trash"></i></button>
       </div>
       <div class="account-stats-grid">
-        <div class="account-stat"><span class="account-stat-label">Net P&L</span><span class="account-stat-value" style="color:${s.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${s.pnl >= 0 ? '+' : ''}$${Math.abs(s.pnl).toFixed(2)}</span></div>
+        <div class="account-stat"><span class="account-stat-label">Net P&L</span><span class="account-stat-value" style="color:${formatSignedMoney(s.pnl).color}">${formatSignedMoney(s.pnl).text}</span></div>
         <div class="account-stat"><span class="account-stat-label">Win Rate</span><span class="account-stat-value">${s.winRate}%</span></div>
         <div class="account-stat"><span class="account-stat-label">Closed Trades</span><span class="account-stat-value">${s.total}</span></div>
         <div class="account-stat"><span class="account-stat-label">Open</span><span class="account-stat-value">${s.open}</span></div>
@@ -276,6 +312,8 @@ function renderSettingsPage() {
   const sheetIdInput = document.getElementById('set-googleSheetId');
   if (sheetIdInput) sheetIdInput.value = settings.googleSheetId || '';
   renderLastSyncStatus();
+  const finnhubInput = document.getElementById('set-finnhubKey');
+  if (finnhubInput) finnhubInput.value = settings.finnhubKey || '';
 
   const list = document.getElementById('settingsAccountsList');
   if (list) {
@@ -311,12 +349,12 @@ function renderGoalCard() {
 
   const toneClass = { success: 'goal-success', encourage: 'goal-encourage', warning: 'goal-warning', neutral: 'goal-neutral' }[a.tone] || 'goal-neutral';
   const barColor = a.tone === 'success' ? 'var(--green)' : a.tone === 'warning' ? 'var(--red)' : a.tone === 'encourage' ? 'var(--blue)' : 'var(--accent)';
-  const dots = a.recentDays.map(d => `<span class="goal-dot ${d.met ? 'met' : 'miss'}" title="${d.date}: ${d.pnl >= 0 ? '+' : ''}$${d.pnl.toFixed(2)}"></span>`).join('');
+  const dots = a.recentDays.map(d => `<span class="goal-dot ${d.met ? 'met' : 'miss'}" title="${d.date}: ${formatSignedMoney(d.pnl).text}"></span>`).join('');
 
   body.innerHTML = `
     <div class="goal-progress-row">
       <div class="goal-progress-text">
-        <span>Today: <strong style="color:${a.todayPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${a.todayPnl >= 0 ? '+' : ''}$${Math.abs(a.todayPnl).toFixed(2)}</strong></span>
+        <span>Today: <strong style="color:${formatSignedMoney(a.todayPnl).color}">${formatSignedMoney(a.todayPnl).text}</strong></span>
         <span>Goal: <strong>$${a.dailyGoal.toFixed(2)}</strong></span>
       </div>
       <div class="goal-bar"><div class="goal-bar-fill" style="width:${a.progressPct}%; background:${barColor}"></div></div>
@@ -327,7 +365,7 @@ function renderGoalCard() {
     </div>
     <div class="goal-meta-row">
       <div class="goal-meta"><span class="goal-meta-label">Streak</span><span class="goal-meta-value">${a.streak} day${a.streak === 1 ? '' : 's'}</span></div>
-      <div class="goal-meta"><span class="goal-meta-label">Reserve</span><span class="goal-meta-value" style="color:${a.reserve >= 0 ? 'var(--green)' : 'var(--red)'}">${a.reserve >= 0 ? '+' : ''}$${Math.abs(a.reserve).toFixed(2)}</span></div>
+      <div class="goal-meta"><span class="goal-meta-label">Reserve</span><span class="goal-meta-value" style="color:${formatSignedMoney(a.reserve).color}">${formatSignedMoney(a.reserve).text}</span></div>
       <div class="goal-dots">${dots}</div>
     </div>
   `;
@@ -462,11 +500,13 @@ function handleIBKRImport() {
         const securityType = t.securityType || 'stock';
         const tickValue = t.tickValue || 1;
         const multiplier = computeTradeMultiplier(securityType, tickValue);
+        // Risk amount is gross (planned stop distance) — commission is a
+        // realized cost, not part of the planned risk, so it's excluded here.
         const riskAmount = Math.abs(t.entry - t.stop) * t.qty * multiplier;
         const r = riskAmount > 0 ? parseFloat((t.pnl / riskAmount).toFixed(2)) : 0;
         trades.push({
-          id: generateSyncId(), date: t.date, symbol: t.symbol, side: t.side, setup: 'other',
-          securityType, tickValue,
+          id: generateSyncId(), date: t.date, symbol: t.symbol, companyName: t.companyName || '', side: t.side, setup: 'other',
+          securityType, tickValue, optionType: t.optionType || '', strike: t.strike ?? null, commission: t.commission || 0,
           entry: t.entry, exit: t.exit, qty: t.qty, stop: t.stop, pnl: t.pnl, r,
           rating: 3, emotion: 'focused', notes: 'Imported from Interactive Brokers CSV sync.',
           account: accountName, entryTime: t.entryTime || '', exitTime: t.exitTime || '',
@@ -540,6 +580,9 @@ function openAddTradeModal(tradeId = null) {
       document.getElementById('f-setup').value = t.setup;
       document.getElementById('f-securityType').value = t.securityType || 'stock';
       document.getElementById('f-tickValue').value = t.tickValue || 1;
+      document.getElementById('f-optionType').value = t.optionType || 'call';
+      document.getElementById('f-strike').value = t.strike === null || t.strike === undefined ? '' : t.strike;
+      document.getElementById('f-commission').value = t.commission || 0;
       document.getElementById('f-entry').value = t.entry;
       document.getElementById('f-exit').value = t.exit === null || t.exit === undefined ? '' : t.exit;
       document.getElementById('f-qty').value = t.qty;
@@ -560,6 +603,9 @@ function openAddTradeModal(tradeId = null) {
     document.getElementById('f-setup').value = 'breakout';
     document.getElementById('f-securityType').value = 'stock';
     document.getElementById('f-tickValue').value = 1;
+    document.getElementById('f-optionType').value = 'call';
+    document.getElementById('f-strike').value = '';
+    document.getElementById('f-commission').value = 0;
     document.getElementById('f-entry').value = '';
     document.getElementById('f-exit').value = '';
     document.getElementById('f-qty').value = '';
@@ -571,7 +617,9 @@ function openAddTradeModal(tradeId = null) {
     if (accounts.length) document.getElementById('f-account').value = accounts[0].name;
     setRating(3);
   }
-  toggleTickValueField();
+  document.getElementById('symbolLookupResult').innerHTML = '';
+  document.getElementById('symbolLookupResult').className = 'symbol-lookup-result';
+  updateSecurityDependentFields();
   tradeModal.classList.add('active');
 }
 
@@ -581,15 +629,56 @@ function nowTimeHHMMSS() {
 }
 
 // Tick Value only applies to multiplier-based instruments (options/futures).
-function toggleTickValueField() {
+// Shows/hides Tick Value, Put/Call, and Strike based on Security type, and
+// relabels the Side selector (Buy/Sell for options contracts, Long/Short for
+// stock/crypto/futures — see saveTrade() for why "buy to open"/"sell to
+// open" reuse the exact same long/short P&L math as stock).
+function updateSecurityDependentFields() {
   const type = document.getElementById('f-securityType').value;
   const needsTickValue = type === 'options' || type === 'futures' || type === 'futureOptions';
+  const isOption = type === 'options' || type === 'futureOptions';
   document.getElementById('tickValueGroup').style.display = needsTickValue ? '' : 'none';
+  document.getElementById('optionTypeGroup').style.display = isOption ? '' : 'none';
+  document.getElementById('strikeGroup').style.display = isOption ? '' : 'none';
+
+  document.getElementById('sideLabel').textContent = isOption ? 'Side (Buy/Sell)' : 'Side';
+  document.getElementById('sideOptLong').textContent = isOption ? 'Buy (Long)' : 'Long';
+  document.getElementById('sideOptShort').textContent = isOption ? 'Sell (Short)' : 'Short';
 }
 
 function closeModal() {
   tradeModal.classList.remove('active');
   editingId = null;
+}
+
+// "Look Up" button on the Add Trade modal: fetches company info + a live
+// quote from Finnhub. See js/marketdata.js — only the *current* price is
+// available on the free tier, not a historical price for a past trade date.
+let lastLookupPrice = null;
+async function handleSymbolLookup() {
+  const symbol = document.getElementById('f-symbol').value.trim();
+  const resultEl = document.getElementById('symbolLookupResult');
+  resultEl.className = 'symbol-lookup-result has-content';
+  resultEl.textContent = 'Looking up...';
+  try {
+    const info = await lookupSymbolInfo(settings.finnhubKey, symbol);
+    document.getElementById('f-symbol').value = info.symbol;
+    lastLookupPrice = info.currentPrice;
+    const priceLine = info.currentPrice != null
+      ? `Live price: <strong>$${info.currentPrice.toFixed(2)}</strong> <button type="button" class="btn-outline" id="useLivePriceBtn">Use as Entry Price</button>`
+      : 'No live price available for this symbol on the free tier.';
+    resultEl.innerHTML = `
+      <div class="company-name">${info.companyName || info.symbol}</div>
+      ${info.exchange ? `<div>${info.exchange}</div>` : ''}
+      <div>${priceLine}</div>
+    `;
+    const useBtn = document.getElementById('useLivePriceBtn');
+    if (useBtn) useBtn.addEventListener('click', () => {
+      document.getElementById('f-entry').value = lastLookupPrice.toFixed(2);
+    });
+  } catch (err) {
+    resultEl.textContent = err.message || 'Lookup failed.';
+  }
 }
 
 function saveTrade() {
@@ -599,6 +688,11 @@ function saveTrade() {
   const setup = document.getElementById('f-setup').value;
   const securityType = document.getElementById('f-securityType').value;
   const tickValue = parseFloat(document.getElementById('f-tickValue').value) || 1;
+  const isOptionType = securityType === 'options' || securityType === 'futureOptions';
+  const optionType = isOptionType ? document.getElementById('f-optionType').value : '';
+  const strikeRaw = document.getElementById('f-strike').value.trim();
+  const strike = isOptionType && strikeRaw !== '' ? parseFloat(strikeRaw) : null;
+  const commission = parseFloat(document.getElementById('f-commission').value) || 0;
   const entry = parseFloat(document.getElementById('f-entry').value);
   const exitRaw = document.getElementById('f-exit').value.trim();
   const exit = exitRaw === '' ? null : parseFloat(exitRaw);
@@ -622,9 +716,14 @@ function saveTrade() {
   const exitTime = exit !== null ? (exitTimeRaw || nowTimeHHMMSS()) : '';
   if (exit !== null) {
     // Stock/crypto: price-diff * qty. Options: price-diff * qty * 100 * tick
-    // value. Futures/future options: price-diff * qty * tick value.
+    // value. Futures/future options: price-diff * qty * tick value. This is
+    // the same formula for a Call or a Put, and for Buy-to-open ("long") or
+    // Sell-to-open/write ("short") — the option's premium (what you actually
+    // entered as Entry/Exit) already prices in the call/put payoff, so the
+    // P&L only ever depends on premium-in vs. premium-out, not the strike.
     const multiplier = computeTradeMultiplier(securityType, tickValue);
-    pnl = (side === 'long' ? (exit - entry) : (entry - exit)) * qty * multiplier;
+    const grossPnl = (side === 'long' ? (exit - entry) : (entry - exit)) * qty * multiplier;
+    pnl = grossPnl - commission;
     const riskAmount = Math.abs(entry - stop) * qty * multiplier;
     r = riskAmount > 0 ? parseFloat((pnl / riskAmount).toFixed(2)) : 0;
     pnl = parseFloat(pnl.toFixed(2));
@@ -633,9 +732,9 @@ function saveTrade() {
   const updatedAt = new Date().toISOString();
   if (editingId) {
     const idx = trades.findIndex(t => t.id === editingId);
-    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, securityType, tickValue, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt };
+    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, securityType, tickValue, optionType, strike, commission, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt };
   } else {
-    trades.push({ id: generateSyncId(), symbol, date, side, setup, securityType, tickValue, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt });
+    trades.push({ id: generateSyncId(), symbol, date, side, setup, securityType, tickValue, optionType, strike, commission, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt });
   }
   trades.sort((a, b) => b.date.localeCompare(a.date));
   persistTrades();
@@ -695,7 +794,7 @@ function renderRecentTrades() {
         <div class="trade-setup">${t.setup} · ${t.side} · ${t.account || ''}</div>
       </div>
       ${isClosedTrade(t)
-        ? `<div class="trade-pnl ${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</div>`
+        ? `<div class="trade-pnl" style="color:${formatSignedMoney(t.pnl).color}">${formatSignedMoney(t.pnl).text}</div>`
         : `<span class="tag open-position">OPEN</span>`}
     </div>`).join('');
 }
@@ -725,12 +824,12 @@ function updateDashboardStats() {
   const profitFactor = grossLoss > 0 ? (grossWin / grossLoss) : (grossWin > 0 ? Infinity : 0);
   const avgR = total ? closed.reduce((s, t) => s + (t.r || 0), 0) / total : 0;
 
-  document.getElementById('stat-pnl').textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
+  setSignedText('stat-pnl', formatSignedMoney(pnl));
   document.getElementById('stat-pnl-sub').textContent = `${total} closed trade${total === 1 ? '' : 's'}`;
   document.getElementById('stat-winrate').textContent = total ? Math.round((wins.length/total)*100) + '%' : '0%';
   document.getElementById('stat-winrate-sub').textContent = `${wins.length} of ${total} closed trades`;
   document.getElementById('stat-pf').textContent = isFinite(profitFactor) ? profitFactor.toFixed(2) : '∞';
-  document.getElementById('stat-avgr').textContent = (avgR >= 0 ? '' : '') + avgR.toFixed(2) + 'R';
+  setSignedText('stat-avgr', formatSignedR(avgR));
   document.getElementById('stat-open-sub').textContent = `${openCount} open position${openCount === 1 ? '' : 's'}`;
   renderAISummary();
 }
@@ -745,8 +844,10 @@ function renderAnalyticsStats() {
   totalEl.textContent = trades.length;
   document.getElementById('an-open').textContent = openCount;
 
-  const best = closed.reduce((m, t) => Math.max(m, t.pnl), 0);
-  document.getElementById('an-best').textContent = (best >= 0 ? '+' : '') + '$' + Math.abs(best).toFixed(2);
+  // Seed with -Infinity (not 0) so "best trade" is correct even when every
+  // closed trade lost money — otherwise it would wrongly show $0.00.
+  const best = closed.length ? closed.reduce((m, t) => Math.max(m, t.pnl), -Infinity) : 0;
+  setSignedText('an-best', formatSignedMoney(best));
 
   const sorted = [...closed].sort((a, b) => a.date.localeCompare(b.date));
   let cum = 0, peak = 0, maxDD = 0;
@@ -755,7 +856,7 @@ function renderAnalyticsStats() {
     peak = Math.max(peak, cum);
     maxDD = Math.min(maxDD, cum - peak);
   });
-  document.getElementById('an-drawdown').textContent = (maxDD < 0 ? '-' : '') + '$' + Math.abs(maxDD).toFixed(2);
+  setSignedText('an-drawdown', formatSignedMoney(maxDD));
 }
 
 // JOURNAL
@@ -782,18 +883,25 @@ function renderJournal() {
   tbody.innerHTML = filtered.map(t => {
     const closed = isClosedTrade(t);
     const securityType = t.securityType || 'stock';
+    const isOptionType = securityType === 'options' || securityType === 'futureOptions';
+    const pnlFmt = formatSignedMoney(t.pnl);
+    const rFmt = formatSignedR(t.r);
     const pnlCell = closed
-      ? `<td style="font-weight:700;color:${t.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</td>`
+      ? `<td style="font-weight:700;color:${pnlFmt.color}">${pnlFmt.text}${t.commission ? `<div class="cell-subtext">net of $${t.commission.toFixed(2)} comm.</div>` : ''}</td>`
       : `<td><span class="tag open-position">OPEN</span></td>`;
     const rCell = closed
-      ? `<td style="color:${t.r >= 0 ? 'var(--green)' : 'var(--red)'}">${t.r >= 0 ? '+' : ''}${t.r}R</td>`
+      ? `<td style="color:${rFmt.color}">${rFmt.text}</td>`
       : `<td>—</td>`;
+    const optionDetail = isOptionType
+      ? `<div class="cell-subtext">${(t.optionType || 'call').toUpperCase()}${t.strike ? ' $' + t.strike.toFixed(2) : ''}</div>`
+      : '';
+    const sideLabel = isOptionType ? (t.side === 'long' ? 'BUY' : 'SELL') : t.side.toUpperCase();
     return `
     <tr>
       <td>${t.date}${t.entryTime ? `<div class="cell-subtext">${t.entryTime}</div>` : ''}</td>
-      <td><strong>${t.symbol}</strong></td>
+      <td><strong>${t.symbol}</strong>${optionDetail}</td>
       <td><span class="tag ${securityType}">${SECURITY_LABELS[securityType] || securityType}</span></td>
-      <td><span class="tag ${t.side}">${t.side.toUpperCase()}</span></td>
+      <td><span class="tag ${t.side}">${sideLabel}</span></td>
       <td><span class="tag ${t.setup}">${t.setup}</span></td>
       <td>${t.account || ''}</td>
       <td>$${t.entry.toFixed(2)}</td>
