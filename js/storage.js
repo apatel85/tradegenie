@@ -17,6 +17,11 @@ const DEFAULT_SETTINGS = {
   lastSilentSyncError: '',
   finnhubKey: '',
   twelveDataKey: '',
+  ibkrLiveEnabled: false,
+  ibkrGatewayUrl: 'https://localhost:5000/v1/api',
+  ibkrPollSeconds: 60,
+  ibkrLastPollAt: '',
+  ibkrLastPollError: '',
 };
 
 function loadJSON(key, fallback) {

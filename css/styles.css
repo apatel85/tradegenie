@@ -277,6 +277,11 @@ tr:hover td { background: var(--bg3); }
 .settings-status.error { color: var(--red); }
 .settings-status.pending { color: var(--yellow); }
 .settings-status a { color: var(--accent); }
+.settings-steps { color: var(--text2); font-size: 0.86rem; line-height: 1.7; margin: 0 0 16px 20px; }
+.settings-steps a { color: var(--accent); }
+.settings-steps code { background: var(--bg3); padding: 1px 6px; border-radius: 4px; font-size: 0.82rem; }
+.toggle-row { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; }
+.toggle-row input { width: 16px; height: 16px; cursor: pointer; }
 .settings-accounts-list { display: flex; flex-direction: column; gap: 8px; }
 .settings-account-row { display: flex; align-items: center; justify-content: space-between; background: var(--bg3); border-radius: 8px; padding: 8px 12px; font-size: 0.88rem; }
 .settings-card #saveGoalBtn, .settings-card #ibkrImportBtn { margin-top: 14px; }

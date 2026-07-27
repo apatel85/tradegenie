@@ -39,6 +39,7 @@ tradegenie/
 │   ├── auth.js          # Landing page / auth gate lifecycle, Google sign-in, Drive sheet discovery
 │   ├── goals.js         # Daily goal assessment + behavioral feedback engine
 │   ├── integrations.js  # Google Sheets two-way sync + Interactive Brokers CSV sync
+│   ├── ibkrLive.js       # IBKR Live Sync (Beta) — polls a local Client Portal Gateway for today's fills
 │   ├── marketdata.js    # Finnhub symbol search / company profile / live quote
 │   └── app.js          # All app logic, event handlers, renderers (bootApp() called by auth.js)
 └── BLUEPRINT.md        # This document
@@ -141,7 +142,9 @@ One app-wide Google OAuth **Client ID** is hardcoded in `js/auth.js` (`GOOGLE_CL
 - **Daily Goal**: set/update the target used by the goal card
 - **Manage Accounts**: add/remove trading accounts, plus an opt-in "Load Sample Data" button (see 4.11.1 — no longer auto-seeded on first run, since first run now always goes through sign-in)
 - **Google Sheets (Master Record)**: shows the signed-in account and linked sheet (both read-only — resolved during sign-in, not typed in). "Sync Now" / "Push Only" as before; "Open Sheet" / "Use a Different Sheet" (manual override if Drive auto-discovery ever picks the wrong file, or to switch sheets)
-- **Sync from Interactive Brokers**: upload a Flex Query/Activity Statement "Trades" CSV; executions are FIFO-matched per symbol+account into round-trip trades (`js/integrations.js`)
+- **Import from Interactive Brokers (CSV, historical)**: upload a Flex Query/Activity Statement "Trades" CSV; executions are FIFO-matched per symbol+account into round-trip trades (`js/integrations.js`)
+- **IBKR Live Sync (Beta, `js/ibkrLive.js`)**: auto-pulls today's executions while the tab is open, by polling IBKR's free local **Client Portal Gateway** (a program the user runs on their own machine and logs into at `https://localhost:5000` — there's no way to reach a brokerage account from a purely static page otherwise). Reuses the exact same `matchExecutionsFIFO()` matcher as the CSV import (`commitImportedTrades()` in `js/app.js` is shared by both paths), just triggered automatically on an interval instead of a file upload. Every poll re-fetches the *whole* current trading day's executions (the Gateway API has no "since last poll" cursor) and re-runs FIFO matching, deduping against trades already in the journal by a content signature — so partial fills and multi-leg closes stay correct across repeated polls.
+  - **Real limitations, stated in the Settings copy too**: only works while the tab is open and the Gateway is running/logged-in on the same computer (no backend to keep polling otherwise); captures only the current day's fills, not history (use the CSV import for that); may be blocked by the Gateway's CORS policy depending on version/configuration, which "Test Connection" surfaces immediately and has no code-level fix from this side.
 - **Clear Local Cache**: (formerly "Reset Data") clears this browser's local copy and immediately re-pulls fresh from the Google Sheet — the cloud data is never touched, since the sheet is the master record now
 
 ---
