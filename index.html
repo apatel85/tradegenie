@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TradeGenie | AI Trading Journal</title>
-  <link rel="stylesheet" href="css/styles.css?v=15" />
+  <link rel="stylesheet" href="css/styles.css?v=16" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 </head>
 <body>
@@ -490,24 +490,52 @@
 
       <div class="card settings-card">
         <div class="card-header"><h3><i class="fa fa-bolt"></i> IBKR Live Sync <span class="label-hint">(Beta)</span></h3></div>
-        <p class="settings-desc">Auto-pulls today's executed trades from Interactive Brokers while this tab is open, using IBKR's free <strong>Client Portal Gateway</strong> — a small program you run on your own computer (there's no way to reach your brokerage account from a purely static, backend-less page otherwise). Setup:</p>
-        <ol class="settings-steps">
-          <li>Enable API access for your account in <a href="https://www.interactivebrokers.com/en/index.php?f=5041" target="_blank" rel="noopener">IBKR Account Management</a> (Settings → API → Settings).</li>
-          <li>Download and run the <a href="https://www.interactivebrokers.com/en/trading/ib-api.php#client-portal-api" target="_blank" rel="noopener">Client Portal Gateway</a> on this computer.</li>
-          <li>Open <code>https://localhost:5000</code> in another browser tab and log in there (accept the self-signed certificate warning — that's expected for a local gateway).</li>
-          <li>Click "Test Connection" below, then enable Live Sync.</li>
-        </ol>
-        <p class="settings-desc"><strong>Limitations:</strong> only works while this tab is open, the Gateway is running, and you're logged into it — there's no backend to keep polling when your computer is off or the tab is closed. It captures <strong>today's</strong> fills only (the Gateway's API doesn't expose history) — use the CSV import above for anything older. It may also be blocked by your browser's CORS policy depending on the Gateway's configuration; "Test Connection" will tell you immediately if that's the case, and there's no code-level fix for that without a backend proxy.</p>
-        <div class="form-grid">
-          <div class="form-group">
-            <label>Gateway URL</label>
-            <input type="text" id="set-ibkrGatewayUrl" placeholder="https://localhost:5000/v1/api" />
-          </div>
-          <div class="form-group">
-            <label>Check every <span class="label-hint">(seconds, min 15)</span></label>
-            <input type="number" id="set-ibkrPollSeconds" min="15" step="5" placeholder="60" />
+        <p class="settings-desc">Auto-pulls executed trades from Interactive Brokers while this tab is open. Two data sources — pick whichever you have set up:</p>
+        <div class="form-grid" style="margin-bottom:12px">
+          <label class="toggle-row"><input type="radio" name="ibkrSyncSource" value="gateway" /> Client Portal Gateway (local program)</label>
+          <label class="toggle-row"><input type="radio" name="ibkrSyncSource" value="flex" /> Flex Web Service (Token + Query ID, no local program)</label>
+        </div>
+
+        <div id="ibkrGatewayFields">
+          <p class="settings-desc">Uses IBKR's free <strong>Client Portal Gateway</strong> — a small program you run on your own computer (there's no way to reach your brokerage account from a purely static, backend-less page otherwise). Setup:</p>
+          <ol class="settings-steps">
+            <li>Enable API access for your account in <a href="https://www.interactivebrokers.com/en/index.php?f=5041" target="_blank" rel="noopener">IBKR Account Management</a> (Settings → API → Settings).</li>
+            <li>Download and run the <a href="https://www.interactivebrokers.com/en/trading/ib-api.php#client-portal-api" target="_blank" rel="noopener">Client Portal Gateway</a> on this computer.</li>
+            <li>Open <code>https://localhost:5000</code> in another browser tab and log in there (accept the self-signed certificate warning — that's expected for a local gateway).</li>
+            <li>Click "Test Connection" below, then enable Live Sync.</li>
+          </ol>
+          <p class="settings-desc"><strong>Limitations:</strong> only works while this tab is open, the Gateway is running, and you're logged into it. Captures <strong>today's</strong> fills only. May be blocked by CORS depending on the Gateway's configuration; "Test Connection" will tell you immediately, and there's no code-level fix for that without a backend proxy.</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Gateway URL</label>
+              <input type="text" id="set-ibkrGatewayUrl" placeholder="https://localhost:5000/v1/api" />
+            </div>
+            <div class="form-group">
+              <label>Check every <span class="label-hint">(seconds, min 15)</span></label>
+              <input type="number" id="set-ibkrPollSeconds" min="15" step="5" placeholder="60" />
+            </div>
           </div>
         </div>
+
+        <div id="ibkrFlexFields">
+          <p class="settings-desc">Uses IBKR's <strong>Flex Web Service</strong> — no local program needed, just your Token and a Query ID. Set up a "Trades" Flex Query (Account Management → Reporting → Flex Queries → create a Trade Confirmation Flex Query, XML format), and enable Flex Web Service under Reporting → Settings to get your Token.</p>
+          <p class="settings-desc"><strong>Limitations:</strong> this is a server-to-server reporting API, not built for direct browser access — it may not accept requests from this page's origin (CORS), which "Test Connection" will reveal immediately with no code-level fix possible here if so. Report generation isn't instant (a few seconds' delay after each request), and IBKR rate-limits repeated calls, so the check interval has a 5-minute floor here regardless of what you enter.</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>Flex Token</label>
+              <input type="password" id="set-ibkrFlexToken" placeholder="Paste your Flex Web Service token" />
+            </div>
+            <div class="form-group">
+              <label>Query ID</label>
+              <input type="text" id="set-ibkrFlexQueryId" placeholder="e.g. 123456" />
+            </div>
+            <div class="form-group">
+              <label>Check every <span class="label-hint">(seconds, min 300)</span></label>
+              <input type="number" id="set-ibkrFlexPollSeconds" min="300" step="60" placeholder="300" />
+            </div>
+          </div>
+        </div>
+
         <div class="settings-actions">
           <button class="btn-outline" id="ibkrTestConnectionBtn"><i class="fa fa-plug"></i> Test Connection</button>
           <label class="toggle-row"><input type="checkbox" id="ibkrLiveEnabledToggle" /> Enable Live Sync</label>
@@ -671,13 +699,13 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="js/data.js?v=15"></script>
-  <script src="js/storage.js?v=15"></script>
-  <script src="js/auth.js?v=15"></script>
-  <script src="js/goals.js?v=15"></script>
-  <script src="js/integrations.js?v=15"></script>
-  <script src="js/ibkrLive.js?v=15"></script>
-  <script src="js/marketdata.js?v=15"></script>
-  <script src="js/app.js?v=15"></script>
+  <script src="js/data.js?v=16"></script>
+  <script src="js/storage.js?v=16"></script>
+  <script src="js/auth.js?v=16"></script>
+  <script src="js/goals.js?v=16"></script>
+  <script src="js/integrations.js?v=16"></script>
+  <script src="js/ibkrLive.js?v=16"></script>
+  <script src="js/marketdata.js?v=16"></script>
+  <script src="js/app.js?v=16"></script>
 </body>
 </html>

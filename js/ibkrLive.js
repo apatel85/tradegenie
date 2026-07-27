@@ -1,15 +1,17 @@
 // INTERACTIVE BROKERS LIVE SYNC (Beta) — auto-pull executed trades
 //
 // This is a static, backend-less app, so there's no server that can hold an
-// IBKR session for you. What CAN work without one: IBKR ships a free local
-// program called the "Client Portal Gateway" — you run it on your own
-// computer, log into it once (https://localhost:5000 by default), and it
-// exposes a local REST API for your own account's data. While this app is
-// open in a browser tab, it polls that local API every ibkrPollSeconds for
-// today's executions and auto-imports any new ones, reusing the exact same
-// FIFO round-trip matcher the manual CSV import uses (see matchExecutionsFIFO
-// in js/integrations.js) — same logic, just triggered automatically instead
-// of on a file upload.
+// IBKR session for you. Two ways to poll for trades without one, both
+// implemented here and selectable in Settings:
+//   1. Client Portal Gateway — a free local program you run on your own
+//      computer and log into once (https://localhost:5000 by default).
+//   2. Flex Web Service — a plain HTTPS reporting API keyed by a Token +
+//      Query ID from Account Management, no local program needed.
+// While this app is open in a browser tab, it polls whichever source is
+// enabled and auto-imports new executions, reusing the exact same FIFO
+// round-trip matcher the manual CSV import uses (see matchExecutionsFIFO in
+// js/integrations.js) — same logic, just triggered automatically instead of
+// on a file upload.
 //
 // Real limitations, stated plainly:
 //   - Only works while this browser tab is open and the Gateway is running
@@ -118,6 +120,163 @@ async function pollIBKRGateway(baseUrl, existingTrades) {
   const gatewayTrades = await ibkrFetchTrades(baseUrl);
   const executions = convertGatewayTradesToExecutions(gatewayTrades);
   executions.sort((a, b) => (a.date + 'T' + (a.time || '00:00')).localeCompare(b.date + 'T' + (b.time || '00:00')));
+  const matched = matchExecutionsFIFO(executions);
+  const known = new Set(existingTrades.map(ibkrTradeSignature));
+  return matched.filter(t => !known.has(ibkrTradeSignature(t)));
+}
+
+// ---------- FLEX WEB SERVICE (alternative to the local Gateway above) ----------
+// IBKR's Flex Web Service is a plain HTTPS reporting API keyed by a Token +
+// Query ID (both from Account Management > Reporting > Flex Queries), and
+// needs no local program running — a real advantage over the Gateway path
+// above when it works. Two-step flow:
+//   1. SendRequest — kicks off report generation, returns a ReferenceCode.
+//   2. GetStatement — fetch the finished report by that ReferenceCode; IBKR
+//      returns a "still generating" error (code 1019) for a few seconds
+//      after SendRequest, so this polls with a short retry/backoff.
+//
+// The big open question, stated plainly: Flex Web Service is a
+// server-to-server reporting API, not built for direct browser access — it
+// may not send CORS headers permitting requests from this page's origin at
+// all. "Test Connection" surfaces that immediately if so; there's no
+// code-level fix for it from a static frontend without a backend proxy,
+// same caveat as the Gateway path.
+//
+// IBKR also throttles Flex Web Service calls (repeated rapid requests can
+// get a query temporarily locked out), so the UI enforces a much longer
+// minimum poll interval here (5 minutes) than the Gateway path (15s).
+const FLEX_SEND_REQUEST_URL = 'https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest';
+const FLEX_GET_STATEMENT_URL = 'https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement';
+const FLEX_STATEMENT_IN_PROGRESS_CODE = '1019';
+
+function parseFlexXML(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  if (doc.querySelector('parsererror')) throw new Error('IBKR returned a response that could not be parsed as XML.');
+  return doc;
+}
+
+async function flexFetchText(url) {
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    throw new Error(`Could not reach IBKR's Flex Web Service. This is often a CORS block (the endpoint may not accept requests from this page's origin), which isn't fixable from here without a backend proxy.`);
+  }
+  if (!res.ok) throw new Error(`IBKR Flex Web Service request failed (${res.status}).`);
+  return res.text();
+}
+
+// Step 1: kick off report generation, return the ReferenceCode to poll for.
+async function flexSendRequest(token, queryId) {
+  const url = `${FLEX_SEND_REQUEST_URL}?t=${encodeURIComponent(token)}&q=${encodeURIComponent(queryId)}&v=3`;
+  const text = await flexFetchText(url);
+  const doc = parseFlexXML(text);
+  const status = doc.querySelector('Status')?.textContent;
+  if (status !== 'Success') {
+    const code = doc.querySelector('ErrorCode')?.textContent;
+    const msg = doc.querySelector('ErrorMessage')?.textContent || 'Unknown error';
+    throw new Error(`IBKR Flex Web Service rejected the request (${code || '?'}): ${msg}. Double-check the Token and Query ID in Settings.`);
+  }
+  const refCode = doc.querySelector('ReferenceCode')?.textContent;
+  if (!refCode) throw new Error('IBKR did not return a reference code for this Flex Query.');
+  return refCode;
+}
+
+// Step 2: poll for the finished report, retrying while IBKR is still
+// generating it (error code 1019).
+async function flexGetStatement(token, referenceCode, { maxAttempts = 6, delayMs = 3000 } = {}) {
+  const url = `${FLEX_GET_STATEMENT_URL}?t=${encodeURIComponent(token)}&q=${encodeURIComponent(referenceCode)}&v=3`;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const text = await flexFetchText(url);
+    // A finished Trades report doesn't start with <FlexStatementResponse>,
+    // it starts with <FlexQueryResponse> — only the error/in-progress shape
+    // uses the former, so check for that before treating it as an error.
+    if (!text.trim().startsWith('<FlexStatementResponse')) return text;
+    const doc = parseFlexXML(text);
+    const code = doc.querySelector('ErrorCode')?.textContent;
+    if (code === FLEX_STATEMENT_IN_PROGRESS_CODE) {
+      await new Promise(r => setTimeout(r, delayMs));
+      continue;
+    }
+    const msg = doc.querySelector('ErrorMessage')?.textContent || 'Unknown error';
+    throw new Error(`IBKR Flex Web Service error (${code || '?'}): ${msg}.`);
+  }
+  throw new Error('IBKR is still generating this Flex report after several attempts — try again in a minute.');
+}
+
+// Best-effort strike/putCall from a Trade element's own attributes first
+// (Flex XML usually has clean "strike"/"putCall" attributes, unlike the
+// Gateway's trades JSON), falling back to the description text.
+function flexOptionDetails(el) {
+  const strikeAttr = parseFloat(el.getAttribute('strike'));
+  const putCallAttr = (el.getAttribute('putCall') || '').trim().toUpperCase();
+  if (!isNaN(strikeAttr) && strikeAttr > 0 && putCallAttr) {
+    return { strike: strikeAttr, optionType: putCallAttr.startsWith('P') ? 'put' : 'call' };
+  }
+  return parseIBKRContractDescription(el.getAttribute('description') || '');
+}
+
+// Flex XML's tradeTime attribute is a standalone "HHMMSS" string (unlike
+// the CSV export's combined "date;time"/"date time" format that
+// normalizeIBKRTime in js/integrations.js expects), so it needs its own
+// simple parser rather than reusing that one.
+function parseFlexTimeAttr(raw) {
+  if (!raw) return '';
+  const m = String(raw).trim().match(/^(\d{2}):?(\d{2}):?(\d{2})?$/);
+  if (!m) return '';
+  return `${m[1]}:${m[2]}:${m[3] || '00'}`;
+}
+
+// Parses a Flex Query "Trades" report (XML) into the same execution shape
+// matchExecutionsFIFO() consumes — mirrors parseIBKRCsv()'s column mapping
+// in js/integrations.js, just reading named XML attributes instead of
+// guessing CSV column positions (Flex XML attributes are already labeled).
+function parseFlexTradesXML(xmlText) {
+  const doc = parseFlexXML(xmlText);
+  const tradeEls = Array.from(doc.querySelectorAll('Trade'));
+  const executions = tradeEls.map(el => {
+    const symbol = (el.getAttribute('symbol') || '').trim().toUpperCase();
+    let qty = parseFloat(el.getAttribute('quantity') || '0');
+    const buySell = (el.getAttribute('buySell') || '').trim().toUpperCase();
+    if (buySell.startsWith('S') && qty > 0) qty = -qty;
+    if (buySell.startsWith('B') && qty < 0) qty = -qty;
+    const price = parseFloat(el.getAttribute('tradePrice') || '0');
+    const assetClassRaw = (el.getAttribute('assetCategory') || '').trim().toUpperCase();
+    const securityType = IBKR_ASSET_CLASS_MAP[assetClassRaw] || 'stock';
+    const isOptionType = securityType === 'options' || securityType === 'futureOptions';
+    const opt = isOptionType ? flexOptionDetails(el) : null;
+    const multiplierRaw = parseFloat(el.getAttribute('multiplier') || '');
+    let tickValue = 1;
+    if (!isNaN(multiplierRaw) && multiplierRaw > 0) {
+      tickValue = securityType === 'options' ? multiplierRaw / 100 : multiplierRaw;
+    }
+    const commissionRaw = parseFloat(el.getAttribute('ibCommission') || '0');
+    const commissionPerUnit = (!isNaN(commissionRaw) && qty !== 0) ? Math.abs(commissionRaw) / Math.abs(qty) : 0;
+    const date = normalizeIBKRDate(el.getAttribute('tradeDate') || '');
+    const time = parseFlexTimeAttr(el.getAttribute('tradeTime') || '') || normalizeIBKRTime(el.getAttribute('dateTime') || '');
+    return {
+      symbol, qty, price, date, time,
+      account: (el.getAttribute('accountId') || '').trim(),
+      securityType, tickValue,
+      optionType: opt ? opt.optionType : '',
+      strike: opt ? opt.strike : null,
+      commissionPerUnit,
+      companyName: (el.getAttribute('description') || '').trim(),
+    };
+  }).filter(e => e.symbol && !isNaN(e.qty) && e.qty !== 0 && !isNaN(e.price));
+
+  executions.sort((a, b) => (a.date + 'T' + (a.time || '00:00')).localeCompare(b.date + 'T' + (b.time || '00:00')));
+  return executions;
+}
+
+// Runs the full SendRequest -> poll GetStatement -> parse -> FIFO-match ->
+// dedupe pipeline, mirroring pollIBKRGateway()'s shape so js/app.js can
+// treat both sources the same way.
+async function pollIBKRFlex(token, queryId, existingTrades) {
+  if (!token || !queryId) throw new Error('Enter your Flex Web Service Token and Query ID in Settings first.');
+  const refCode = await flexSendRequest(token, queryId);
+  const xmlText = await flexGetStatement(token, refCode);
+  const executions = parseFlexTradesXML(xmlText);
   const matched = matchExecutionsFIFO(executions);
   const known = new Set(existingTrades.map(ibkrTradeSignature));
   return matched.filter(t => !known.has(ibkrTradeSignature(t)));
