@@ -62,7 +62,8 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 - **Edit mode**: Pre-fills form with existing trade data
 - **Auto-calculated P&L and R**: Computed from entry, exit, qty, stop loss
 - **Open positions**: Exit Price can be left blank to log a trade as an open position (shown as an "OPEN" badge, excluded from win rate/P&L/profit factor); editing the trade later to fill in an exit price closes it and computes P&L/R
-- **Actual entry/exit timestamps**: Entry Time and Exit Time are auto-filled with the real wall-clock time when a trade is opened/closed (editable if backfilling), stored and shown alongside the date in the Journal
+- **Actual entry/exit timestamps**: Entry Time and Exit Time (HH:MM:SS) are auto-filled with the real wall-clock time when a trade is opened/closed (editable if backfilling), stored and shown alongside the date in the Journal
+- **Security type**: Stock, Options, Futures, Future Options, or Crypto, selected per trade. Options and Futures/Future Options reveal a "Tick Value" field (every 1 point = $x, defaults to $1) that drives the P&L formula — stock/crypto use price-diff × qty; options use price-diff × qty × 100 × tick value; futures/future options use price-diff × qty × tick value. A matching "Security" filter and column are in the Journal, and Interactive Brokers CSV import auto-detects the security type from the broker's AssetClass column
 
 ### 4.3 Analytics
 - **4 stat cards**: Total Trades, Avg Hold Time, Max Drawdown, Best Trade

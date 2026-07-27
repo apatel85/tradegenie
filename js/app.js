@@ -35,6 +35,8 @@ function migrateTradeIds(list) {
   list.forEach(t => {
     if (!t.id || typeof t.id !== 'string') { t.id = generateSyncId(); changed = true; }
     if (!t.updatedAt) { t.updatedAt = (t.date ? t.date + 'T00:00:00.000Z' : new Date().toISOString()); changed = true; }
+    if (!t.securityType) { t.securityType = 'stock'; changed = true; }
+    if (!t.tickValue) { t.tickValue = 1; changed = true; }
   });
   return changed;
 }
@@ -138,11 +140,13 @@ function setupEventListeners() {
   document.getElementById('closeModal').addEventListener('click', closeModal);
   document.getElementById('cancelModal').addEventListener('click', closeModal);
   document.getElementById('saveTradeBtn').addEventListener('click', saveTrade);
+  document.getElementById('f-securityType').addEventListener('change', toggleTickValueField);
   // Filters
   document.getElementById('searchTrades').addEventListener('input', renderJournal);
   document.getElementById('filterResult').addEventListener('change', renderJournal);
   document.getElementById('filterSetup').addEventListener('change', renderJournal);
   document.getElementById('filterAccount').addEventListener('change', renderJournal);
+  document.getElementById('filterSecurity').addEventListener('change', renderJournal);
   // AI Chat
   document.getElementById('chatSendBtn').addEventListener('click', sendAIMessage);
   document.getElementById('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAIMessage(); });
@@ -455,10 +459,14 @@ function handleIBKRImport() {
           accounts.push({ id: nextAccountId++, name: accountName, broker: 'Interactive Brokers' });
           accountNames.add(accountName);
         }
-        const riskPerShare = Math.abs(t.entry - t.stop);
-        const r = riskPerShare > 0 ? parseFloat((t.pnl / (riskPerShare * t.qty)).toFixed(2)) : 0;
+        const securityType = t.securityType || 'stock';
+        const tickValue = t.tickValue || 1;
+        const multiplier = computeTradeMultiplier(securityType, tickValue);
+        const riskAmount = Math.abs(t.entry - t.stop) * t.qty * multiplier;
+        const r = riskAmount > 0 ? parseFloat((t.pnl / riskAmount).toFixed(2)) : 0;
         trades.push({
           id: generateSyncId(), date: t.date, symbol: t.symbol, side: t.side, setup: 'other',
+          securityType, tickValue,
           entry: t.entry, exit: t.exit, qty: t.qty, stop: t.stop, pnl: t.pnl, r,
           rating: 3, emotion: 'focused', notes: 'Imported from Interactive Brokers CSV sync.',
           account: accountName, entryTime: t.entryTime || '', exitTime: t.exitTime || '',
@@ -530,16 +538,18 @@ function openAddTradeModal(tradeId = null) {
       document.getElementById('f-date').value = t.date;
       document.getElementById('f-side').value = t.side;
       document.getElementById('f-setup').value = t.setup;
+      document.getElementById('f-securityType').value = t.securityType || 'stock';
+      document.getElementById('f-tickValue').value = t.tickValue || 1;
       document.getElementById('f-entry').value = t.entry;
       document.getElementById('f-exit').value = t.exit === null || t.exit === undefined ? '' : t.exit;
       document.getElementById('f-qty').value = t.qty;
       document.getElementById('f-stop').value = t.stop;
       document.getElementById('f-notes').value = t.notes;
       document.getElementById('f-emotion').value = t.emotion;
-      document.getElementById('f-entryTime').value = t.entryTime || nowTimeHHMM();
+      document.getElementById('f-entryTime').value = t.entryTime || nowTimeHHMMSS();
       // Default the exit-time field to "now" when there's no exit price yet,
       // so closing the position later captures an accurate close timestamp.
-      document.getElementById('f-exitTime').value = t.exitTime || nowTimeHHMM();
+      document.getElementById('f-exitTime').value = t.exitTime || nowTimeHHMMSS();
       if (t.account) document.getElementById('f-account').value = t.account;
       setRating(t.rating);
     }
@@ -548,23 +558,33 @@ function openAddTradeModal(tradeId = null) {
     document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
     document.getElementById('f-side').value = 'long';
     document.getElementById('f-setup').value = 'breakout';
+    document.getElementById('f-securityType').value = 'stock';
+    document.getElementById('f-tickValue').value = 1;
     document.getElementById('f-entry').value = '';
     document.getElementById('f-exit').value = '';
     document.getElementById('f-qty').value = '';
     document.getElementById('f-stop').value = '';
     document.getElementById('f-notes').value = '';
     document.getElementById('f-emotion').value = 'focused';
-    document.getElementById('f-entryTime').value = nowTimeHHMM();
-    document.getElementById('f-exitTime').value = nowTimeHHMM();
+    document.getElementById('f-entryTime').value = nowTimeHHMMSS();
+    document.getElementById('f-exitTime').value = nowTimeHHMMSS();
     if (accounts.length) document.getElementById('f-account').value = accounts[0].name;
     setRating(3);
   }
+  toggleTickValueField();
   tradeModal.classList.add('active');
 }
 
-function nowTimeHHMM() {
+function nowTimeHHMMSS() {
   const d = new Date();
-  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+}
+
+// Tick Value only applies to multiplier-based instruments (options/futures).
+function toggleTickValueField() {
+  const type = document.getElementById('f-securityType').value;
+  const needsTickValue = type === 'options' || type === 'futures' || type === 'futureOptions';
+  document.getElementById('tickValueGroup').style.display = needsTickValue ? '' : 'none';
 }
 
 function closeModal() {
@@ -577,6 +597,8 @@ function saveTrade() {
   const date = document.getElementById('f-date').value;
   const side = document.getElementById('f-side').value;
   const setup = document.getElementById('f-setup').value;
+  const securityType = document.getElementById('f-securityType').value;
+  const tickValue = parseFloat(document.getElementById('f-tickValue').value) || 1;
   const entry = parseFloat(document.getElementById('f-entry').value);
   const exitRaw = document.getElementById('f-exit').value.trim();
   const exit = exitRaw === '' ? null : parseFloat(exitRaw);
@@ -586,7 +608,7 @@ function saveTrade() {
   const emotion = document.getElementById('f-emotion').value;
   const rating = parseInt(document.getElementById('f-rating').value);
   const account = document.getElementById('f-account').value || (accounts[0] && accounts[0].name) || 'Main';
-  const entryTime = document.getElementById('f-entryTime').value || nowTimeHHMM();
+  const entryTime = document.getElementById('f-entryTime').value || nowTimeHHMMSS();
   const exitTimeRaw = document.getElementById('f-exitTime').value;
 
   if (!symbol || !date || isNaN(entry) || (exit !== null && isNaN(exit))) {
@@ -597,20 +619,23 @@ function saveTrade() {
   let pnl = null, r = null;
   // The actual wall-clock time this trade was closed — captured automatically
   // (the field defaults to "now", editable if you're logging after the fact).
-  const exitTime = exit !== null ? (exitTimeRaw || nowTimeHHMM()) : '';
+  const exitTime = exit !== null ? (exitTimeRaw || nowTimeHHMMSS()) : '';
   if (exit !== null) {
-    pnl = side === 'long' ? (exit - entry) * qty : (entry - exit) * qty;
-    const riskPerShare = Math.abs(entry - stop);
-    r = riskPerShare > 0 ? parseFloat((pnl / (riskPerShare * qty)).toFixed(2)) : 0;
+    // Stock/crypto: price-diff * qty. Options: price-diff * qty * 100 * tick
+    // value. Futures/future options: price-diff * qty * tick value.
+    const multiplier = computeTradeMultiplier(securityType, tickValue);
+    pnl = (side === 'long' ? (exit - entry) : (entry - exit)) * qty * multiplier;
+    const riskAmount = Math.abs(entry - stop) * qty * multiplier;
+    r = riskAmount > 0 ? parseFloat((pnl / riskAmount).toFixed(2)) : 0;
     pnl = parseFloat(pnl.toFixed(2));
   }
 
   const updatedAt = new Date().toISOString();
   if (editingId) {
     const idx = trades.findIndex(t => t.id === editingId);
-    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt };
+    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, securityType, tickValue, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt };
   } else {
-    trades.push({ id: generateSyncId(), symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt });
+    trades.push({ id: generateSyncId(), symbol, date, side, setup, securityType, tickValue, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt });
   }
   trades.sort((a, b) => b.date.localeCompare(a.date));
   persistTrades();
@@ -734,11 +759,14 @@ function renderAnalyticsStats() {
 }
 
 // JOURNAL
+const SECURITY_LABELS = { stock: 'Stock', options: 'Options', futures: 'Futures', futureOptions: 'Future Options', crypto: 'Crypto' };
+
 function renderJournal() {
   const search = document.getElementById('searchTrades').value.toLowerCase();
   const result = document.getElementById('filterResult').value;
   const setup = document.getElementById('filterSetup').value;
   const account = document.getElementById('filterAccount').value;
+  const security = document.getElementById('filterSecurity').value;
   let filtered = trades.filter(t => {
     const closed = isClosedTrade(t);
     if (search && !t.symbol.toLowerCase().includes(search)) return false;
@@ -747,11 +775,13 @@ function renderJournal() {
     if (result === 'open' && closed) return false;
     if (setup !== 'all' && t.setup !== setup) return false;
     if (account !== 'all' && t.account !== account) return false;
+    if (security !== 'all' && (t.securityType || 'stock') !== security) return false;
     return true;
   });
   const tbody = document.getElementById('tradeBody');
   tbody.innerHTML = filtered.map(t => {
     const closed = isClosedTrade(t);
+    const securityType = t.securityType || 'stock';
     const pnlCell = closed
       ? `<td style="font-weight:700;color:${t.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${t.pnl >= 0 ? '+' : ''}$${Math.abs(t.pnl).toFixed(2)}</td>`
       : `<td><span class="tag open-position">OPEN</span></td>`;
@@ -762,6 +792,7 @@ function renderJournal() {
     <tr>
       <td>${t.date}${t.entryTime ? `<div class="cell-subtext">${t.entryTime}</div>` : ''}</td>
       <td><strong>${t.symbol}</strong></td>
+      <td><span class="tag ${securityType}">${SECURITY_LABELS[securityType] || securityType}</span></td>
       <td><span class="tag ${t.side}">${t.side.toUpperCase()}</span></td>
       <td><span class="tag ${t.setup}">${t.setup}</span></td>
       <td>${t.account || ''}</td>
@@ -771,8 +802,8 @@ function renderJournal() {
       ${rCell}
       <td>${'★'.repeat(t.rating)}${'☆'.repeat(5-t.rating)}</td>
       <td>
-        <button class="icon-btn" onclick="openAddTradeModal(${t.id})" title="${closed ? 'Edit' : 'Edit / Close Position'}"><i class="fa fa-edit"></i></button>
-        <button class="icon-btn del" onclick="deleteTrade(${t.id})" title="Delete"><i class="fa fa-trash"></i></button>
+        <button class="icon-btn" onclick="openAddTradeModal('${t.id}')" title="${closed ? 'Edit' : 'Edit / Close Position'}"><i class="fa fa-edit"></i></button>
+        <button class="icon-btn del" onclick="deleteTrade('${t.id}')" title="Delete"><i class="fa fa-trash"></i></button>
       </td>
     </tr>`;
   }).join('');
@@ -914,7 +945,7 @@ function renderAnalyticsCharts() {
   });
 
   // Risk ($ at stop) vs realized P&L — real data, no fabricated MFE/MAE.
-  const riskData = closed.map(t => ({ x: parseFloat((Math.abs(t.entry - t.stop) * t.qty).toFixed(2)), y: t.pnl }));
+  const riskData = closed.map(t => ({ x: parseFloat((Math.abs(t.entry - t.stop) * t.qty * computeTradeMultiplier(t.securityType, t.tickValue)).toFixed(2)), y: t.pnl }));
   if (mfeChartInstance) mfeChartInstance.destroy();
   mfeChartInstance = new Chart(document.getElementById('mfeChart'), {
     type: 'scatter',
