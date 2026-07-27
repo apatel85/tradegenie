@@ -133,6 +133,10 @@ function ensureGisTokenClient(onToken) {
   gisTokenClient.callback = (resp) => {
     if (resp.error) { onToken(null, resp); return; }
     gisAccessToken = resp.access_token;
+    // Keep the same refresh-proof token cache js/auth.js reads on page load
+    // up to date, regardless of which code path (auth gate vs. a manual
+    // "Sync Now") actually obtained the token.
+    if (typeof saveCachedToken === 'function') saveCachedToken(resp.access_token, resp.expires_in);
     onToken(gisAccessToken, null);
   };
   return gisTokenClient;
