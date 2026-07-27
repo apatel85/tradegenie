@@ -550,9 +550,14 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
   const status = document.getElementById('sheetsStatus');
   if (!silent) { status.textContent = 'Connecting to Google...'; status.className = 'settings-status pending'; }
   try {
+    // Reuse the still-live token from the auth gate / a previous sync if
+    // there is one, instead of always making a fresh OAuth request — this
+    // is the same "don't ask again needlessly" fix as initAuth() on load.
+    const cachedToken = typeof loadCachedToken === 'function' ? loadCachedToken() : null;
     const result = await syncAllWithGoogleSheets(buildSyncState(), settings, {
       onStatus: (msg) => { if (!silent) status.textContent = msg; },
       interactive,
+      preAuthorizedToken: cachedToken || undefined,
     });
     trades = result.trades;
     accounts = result.accounts;

@@ -28,6 +28,17 @@ const AUTH_SCOPES = 'openid email profile https://www.googleapis.com/auth/spread
 const AUTH_SESSION_KEY = 'tz_auth_session_v1';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24h — re-confirm identity daily
 
+// The access token itself (unlike identity above) is cached in
+// sessionStorage, not localStorage — Google's implicit-flow tokens are
+// short-lived (~1h) by design, so there's nothing to gain from surviving a
+// browser restart, but everything to gain from surviving a same-tab
+// refresh: as long as the cached token hasn't actually expired, a refresh
+// reuses it directly instead of making a fresh OAuth request every single
+// time, which is what was making silent reconnect a coin-flip on refresh
+// (it depends on 3rd-party cookies that many browsers restrict).
+const ACCESS_TOKEN_SESS_KEY = 'tz_gsheets_token_sess';
+const TOKEN_EXPIRY_SAFETY_MS = 60 * 1000; // treat a token as expired 60s early
+
 let authUser = null;   // { email, name, cachedAt }
 let authToken = null;  // current access token (Sheets + Drive scoped)
 let _pendingSheetInfo = null;
@@ -36,8 +47,7 @@ function clientIdConfigured() {
   return !!GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.includes('PASTE_YOUR');
 }
 
-// ── Session cache (identity only — the token itself is never stored, it's
-// re-derived silently via requestAuthTokenSilent on every load) ──
+// ── Session cache (identity only) ──
 function loadCachedSession() {
   try {
     const raw = localStorage.getItem(AUTH_SESSION_KEY);
@@ -53,6 +63,27 @@ function saveCachedSession(user) {
 }
 function clearCachedSession() {
   localStorage.removeItem(AUTH_SESSION_KEY);
+}
+
+// ── Access token cache (this-tab-session only, see comment above) ──
+function saveCachedToken(token, expiresInSec) {
+  try {
+    const expiresAt = Date.now() + (Number(expiresInSec) || 3600) * 1000;
+    sessionStorage.setItem(ACCESS_TOKEN_SESS_KEY, JSON.stringify({ token, expiresAt }));
+  } catch (e) { /* sessionStorage unavailable (rare) — just skip caching */ }
+}
+function loadCachedToken() {
+  try {
+    const raw = sessionStorage.getItem(ACCESS_TOKEN_SESS_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw);
+    if (!cached || !cached.token || !cached.expiresAt) return null;
+    if (Date.now() > cached.expiresAt - TOKEN_EXPIRY_SAFETY_MS) { sessionStorage.removeItem(ACCESS_TOKEN_SESS_KEY); return null; }
+    return cached.token;
+  } catch (e) { return null; }
+}
+function clearCachedToken() {
+  try { sessionStorage.removeItem(ACCESS_TOKEN_SESS_KEY); } catch (e) {}
 }
 
 // ── UI plumbing ──
@@ -101,6 +132,19 @@ function initAuth() {
   const cached = loadCachedSession();
   if (!cached) { showLandingPage(); return; }
   authUser = cached;
+
+  // A refresh within the same browser tab reuses the still-live access
+  // token instead of making a fresh OAuth request at all — this is what
+  // actually stops "refresh = try to log in again", since silent OAuth via
+  // a hidden iframe (the fallback below) depends on 3rd-party cookies that
+  // plenty of browsers restrict and can't be relied on every time.
+  const cachedToken = loadCachedToken();
+  if (cachedToken) {
+    authToken = cachedToken;
+    resolveSheetAndUnlock(cachedToken, cached, { silent: true });
+    return;
+  }
+
   showAuthGate();
   showAuthPanel('progress');
   setAuthStatus('Reconnecting to Google...');
@@ -108,9 +152,20 @@ function initAuth() {
     .then(token => { authToken = token; return resolveSheetAndUnlock(token, cached, { silent: true }); })
     .catch(() => {
       // Silent reconnect failed (3rd-party cookies blocked, revoked
-      // consent, Incognito, etc.) — fall back to one manual click instead
-      // of silently stranding the user. Their data is safe in the sheet
-      // either way, so this is a minor speed bump, not a data-loss risk.
+      // consent, Incognito, etc.). If this device already has a resolved
+      // sheet and local data from a previous session, don't block behind a
+      // scary full-screen error for what's ultimately just an expired
+      // token — boot straight into the app with what's on this device
+      // already, and let the next background sync (or a manual "Sync Now")
+      // pick up a fresh token instead. Only show the auth gate if there's
+      // truly nothing local to show yet.
+      if (settings.googleSheetId) {
+        settings.lastSilentSyncError = 'Could not silently reconnect to Google — click "Sync Now" in Settings to refresh your connection.';
+        persistSettings();
+        unlockApp(cached);
+        return;
+      }
+      showAuthGate();
       showAuthPanel('error');
       setAuthError('Could not silently reconnect to Google (often caused by blocked third-party cookies or an Incognito/Private window). Click below to sign in again.');
     });
@@ -124,8 +179,9 @@ function requestAuthTokenSilent(emailHint) {
       scope: AUTH_SCOPES,
       hint: emailHint || undefined,
       callback: (resp) => {
-        if (resp.error || !resp.access_token) reject(new Error(resp.error || 'no-token'));
-        else resolve(resp.access_token);
+        if (resp.error || !resp.access_token) { reject(new Error(resp.error || 'no-token')); return; }
+        saveCachedToken(resp.access_token, resp.expires_in);
+        resolve(resp.access_token);
       },
     });
     client.requestAccessToken({ prompt: 'none' });
@@ -147,6 +203,7 @@ function authSignIn() {
         return;
       }
       authToken = resp.access_token;
+      saveCachedToken(resp.access_token, resp.expires_in);
       try {
         setAuthStatus('Fetching your profile...');
         const profileRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + authToken } });
@@ -276,6 +333,7 @@ function unlockApp(user) {
 function authSignOut() {
   if (!confirm('Sign out of TradeGenie? Your data stays safe in your Google Sheet — sign back in anytime to pick up where you left off.')) return;
   clearCachedSession();
+  clearCachedToken();
   // Full reload rather than just swapping views back to the landing page —
   // clears all in-memory state (trades/accounts/tokens) so a later sign-in
   // starts clean instead of re-running setupEventListeners() on top of
