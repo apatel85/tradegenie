@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TradeGenie | AI Trading Journal</title>
-  <link rel="stylesheet" href="css/styles.css?v=5" />
+  <link rel="stylesheet" href="css/styles.css?v=6" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 </head>
 <body>
@@ -334,8 +334,9 @@
       </div>
 
       <div class="card settings-card">
-        <div class="card-header"><h3><i class="fa fa-table"></i> Export to Google Sheets</h3></div>
-        <p class="settings-desc">Exports your full trade history directly into a Google Sheet. Requires a Google OAuth Client ID from your own <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud project</a> (Sheets API enabled, Web application type, this page's origin added to Authorized JavaScript origins). Your credentials stay in this browser only.</p>
+        <div class="card-header"><h3><i class="fa fa-table"></i> Sync with Google Sheets</h3></div>
+        <p class="settings-desc">Keeps a shared Google Sheet as the common copy of your trades across every device. "Sync Now" pulls in any trades added elsewhere, merges them with what's on this device (newest edit wins), and pushes the combined result back — do this on both your desktop and mobile browser to keep them lined up. Requires a Google OAuth Client ID from your own <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud project</a> (Sheets API enabled, Web application type, this page's origin added to Authorized JavaScript origins). Your credentials stay in this browser only, and each device needs to sign in with Google once — there's no way around that without a backend server, which this app doesn't have.</p>
+        <p class="settings-desc"><strong>Note:</strong> deletions don't sync across devices yet — delete a trade on each device separately, or it can reappear from the shared sheet on your next sync.</p>
         <div class="form-grid">
           <div class="form-group">
             <label>Google OAuth Client ID</label>
@@ -347,10 +348,12 @@
           </div>
         </div>
         <div class="settings-actions">
-          <button class="btn-primary" id="exportSheetsBtn"><i class="fa fa-file-export"></i> Connect &amp; Export to Google Sheets</button>
+          <button class="btn-primary" id="syncSheetsBtn"><i class="fa fa-rotate"></i> Sync Now (Pull + Push)</button>
+          <button class="btn-outline" id="exportSheetsBtn"><i class="fa fa-file-export"></i> Push Only (Overwrite Sheet)</button>
           <button class="btn-outline" id="exportCsvBtn"><i class="fa fa-download"></i> Export CSV (no setup needed)</button>
         </div>
         <div id="sheetsStatus" class="settings-status"></div>
+        <div id="sheetsLastSync" class="settings-status"></div>
       </div>
 
       <div class="card settings-card">
@@ -413,8 +416,16 @@
             <input type="number" id="f-entry" placeholder="0.00" step="0.01" required />
           </div>
           <div class="form-group">
+            <label>Entry Time <span class="label-hint">(actual time, auto-filled)</span></label>
+            <input type="time" id="f-entryTime" />
+          </div>
+          <div class="form-group">
             <label>Exit Price <span class="label-hint">(leave blank to keep position open)</span></label>
             <input type="number" id="f-exit" placeholder="Open position" step="0.01" />
+          </div>
+          <div class="form-group">
+            <label>Exit Time <span class="label-hint">(actual time, auto-filled)</span></label>
+            <input type="time" id="f-exitTime" />
           </div>
           <div class="form-group">
             <label>Shares/Contracts</label>
@@ -464,10 +475,10 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="js/data.js?v=5"></script>
-  <script src="js/storage.js?v=5"></script>
-  <script src="js/goals.js?v=5"></script>
-  <script src="js/integrations.js?v=5"></script>
-  <script src="js/app.js?v=5"></script>
+  <script src="js/data.js?v=6"></script>
+  <script src="js/storage.js?v=6"></script>
+  <script src="js/goals.js?v=6"></script>
+  <script src="js/integrations.js?v=6"></script>
+  <script src="js/app.js?v=6"></script>
 </body>
 </html>

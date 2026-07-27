@@ -1,11 +1,50 @@
-// GOOGLE SHEETS EXPORT + INTERACTIVE BROKERS CSV SYNC
+// GOOGLE SHEETS SYNC + INTERACTIVE BROKERS CSV SYNC
 
-const TRADE_EXPORT_COLUMNS = ['date', 'symbol', 'side', 'setup', 'entry', 'exit', 'qty', 'stop', 'pnl', 'r', 'rating', 'emotion', 'account', 'notes'];
+function generateSyncId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+// Column order doubles as the Google Sheet schema — importTradesFromGoogleSheets
+// reads these same header labels back out, so keep the two in sync.
+const TRADE_EXPORT_COLUMNS = ['id', 'date', 'entryTime', 'symbol', 'side', 'setup', 'entry', 'exit', 'exitTime', 'qty', 'stop', 'pnl', 'r', 'rating', 'emotion', 'account', 'notes', 'updatedAt'];
+const TRADE_EXPORT_HEADER = ['Trade ID', 'Date', 'Entry Time', 'Symbol', 'Side', 'Setup', 'Entry', 'Exit', 'Exit Time', 'Qty', 'Stop', 'P&L', 'R', 'Rating', 'Emotion', 'Account', 'Notes', 'Updated At'];
+const TRADE_NUMERIC_COLUMNS = new Set(['entry', 'exit', 'qty', 'stop', 'pnl', 'r', 'rating']);
+// These must always be a number (never null) — exit/pnl/r stay nullable for open positions.
+const TRADE_REQUIRED_NUMERIC_DEFAULTS = { entry: 0, qty: 1, stop: 0, rating: 3 };
 
 function tradesToRows(tradeList) {
-  const header = ['Date', 'Symbol', 'Side', 'Setup', 'Entry', 'Exit', 'Qty', 'Stop', 'P&L', 'R', 'Rating', 'Emotion', 'Account', 'Notes'];
   const rows = tradeList.map(t => TRADE_EXPORT_COLUMNS.map(c => t[c] === undefined || t[c] === null ? '' : t[c]));
-  return [header, ...rows];
+  return [TRADE_EXPORT_HEADER, ...rows];
+}
+
+// Reverse of tradesToRows: parse a Sheets values grid (header + data rows)
+// back into trade objects. Matches columns by header text (case-insensitive)
+// so a reordered or partially-edited sheet still imports correctly.
+function rowsToTrades(values) {
+  if (!values || values.length < 2) return [];
+  const header = values[0].map(h => String(h || '').trim().toLowerCase());
+  const colIndex = TRADE_EXPORT_HEADER.map(h => header.indexOf(h.toLowerCase()));
+  const trades = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (!row || !row.length) continue;
+    const t = {};
+    TRADE_EXPORT_COLUMNS.forEach((key, ci) => {
+      const idx = colIndex[ci];
+      let raw = idx === -1 || idx >= row.length ? '' : row[idx];
+      if (raw === '' || raw === undefined) {
+        t[key] = TRADE_NUMERIC_COLUMNS.has(key) ? (TRADE_REQUIRED_NUMERIC_DEFAULTS[key] ?? null) : '';
+        return;
+      }
+      t[key] = TRADE_NUMERIC_COLUMNS.has(key) ? parseFloat(raw) : String(raw);
+    });
+    if (!t.symbol || !t.date) continue;
+    if (!t.id) t.id = generateSyncId();
+    if (!t.updatedAt) t.updatedAt = t.date + 'T00:00:00.000Z';
+    trades.push(t);
+  }
+  return trades;
 }
 
 // ---------- CSV EXPORT (always available, no setup required) ----------
@@ -29,7 +68,12 @@ function csvEscape(val) {
   return s;
 }
 
-// ---------- GOOGLE SHEETS EXPORT (OAuth via Google Identity Services) ----------
+// ---------- GOOGLE SHEETS SYNC (OAuth via Google Identity Services) ----------
+// This is a static, backend-less app, so there is no server to hold a
+// long-lived refresh token — each browser/device has to sign in with Google
+// at least once (a popup), after which its own access token is reused for
+// the rest of that session. That one-time sign-in per device is what makes
+// the shared Sheet the actual source of truth across desktop and mobile.
 let gisTokenClient = null;
 let gisAccessToken = null;
 
@@ -56,45 +100,45 @@ function ensureGisTokenClient(clientId, onToken) {
   return gisTokenClient;
 }
 
-async function exportTradesToGoogleSheets(tradeList, settings, { onStatus } = {}) {
-  const clientId = (settings.googleClientId || '').trim();
-  if (!clientId) {
-    throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
-  }
-
-  const token = await new Promise((resolve, reject) => {
+// interactive=true may show a Google sign-in popup; interactive=false only
+// succeeds if this browser already has a live grant (used for silent
+// auto-sync on load, so we never surprise-popup the user).
+function getGoogleAccessToken(clientId, interactive) {
+  return new Promise((resolve, reject) => {
     try {
       const client = ensureGisTokenClient(clientId, (accessToken, err) => {
-        if (err || !accessToken) reject(new Error('Google sign-in was cancelled or failed.'));
+        if (err || !accessToken) reject(new Error('Google sign-in was cancelled, failed, or requires interaction.'));
         else resolve(accessToken);
       });
-      client.requestAccessToken({ prompt: gisAccessToken ? '' : 'consent' });
+      client.requestAccessToken({ prompt: gisAccessToken ? '' : (interactive ? 'consent' : '') });
     } catch (e) {
       reject(e);
     }
   });
+}
 
-  onStatus && onStatus('Signed in. Preparing spreadsheet...');
-
-  const rows = tradesToRows(tradeList);
+async function ensureSpreadsheet(token, settings, onStatus) {
   let sheetId = (settings.googleSheetId || '').trim();
   let sheetUrl = settings.googleSheetUrl || '';
-
   if (!sheetId) {
     onStatus && onStatus('Creating a new Google Sheet...');
     const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ properties: { title: `TradeGenie Journal Export — ${new Date().toLocaleDateString()}` } }),
+      body: JSON.stringify({ properties: { title: `TradeGenie Journal — ${new Date().toLocaleDateString()}` } }),
     });
     if (!createRes.ok) throw new Error(`Could not create spreadsheet (${createRes.status}). Check the OAuth Client ID and that the Sheets API is enabled.`);
     const created = await createRes.json();
     sheetId = created.spreadsheetId;
     sheetUrl = created.spreadsheetUrl;
   }
+  if (!sheetUrl) sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+  return { sheetId, sheetUrl };
+}
 
-  onStatus && onStatus('Writing trade data...');
-  const range = `A1:${String.fromCharCode(64 + rows[0].length)}${rows.length}`;
+async function writeTradesToSheet(token, sheetId, tradeList) {
+  const rows = tradesToRows(tradeList);
+  const range = `A1:${String.fromCharCode(64 + rows[0].length)}${Math.max(rows.length, 2)}`;
   const updateRes = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
     {
@@ -104,9 +148,84 @@ async function exportTradesToGoogleSheets(tradeList, settings, { onStatus } = {}
     }
   );
   if (!updateRes.ok) throw new Error(`Could not write to spreadsheet (${updateRes.status}). Your saved Sheet ID may be invalid or you no longer have edit access.`);
+}
 
-  if (!sheetUrl) sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+async function readTradesFromSheet(token, sheetId) {
+  const range = `A1:${String.fromCharCode(64 + TRADE_EXPORT_HEADER.length)}100000`;
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error(`Could not read the spreadsheet (${res.status}). Check the Sheet ID and that you have access to it.`);
+  const data = await res.json();
+  return rowsToTrades(data.values || []);
+}
+
+async function exportTradesToGoogleSheets(tradeList, settings, { onStatus } = {}) {
+  const clientId = (settings.googleClientId || '').trim();
+  if (!clientId) {
+    throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
+  }
+  const token = await getGoogleAccessToken(clientId, true);
+  onStatus && onStatus('Signed in. Preparing spreadsheet...');
+  const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
+  onStatus && onStatus('Writing trade data...');
+  await writeTradesToSheet(token, sheetId, tradeList);
   return { sheetId, sheetUrl };
+}
+
+// Merges a remote trade set (pulled from Sheets) into a local one, keyed by
+// trade id, newest updatedAt wins on conflicts. Trades that exist only
+// locally are kept as-is (they'll go up on the next push). Note: this does
+// not sync deletions — deleting a trade on one device and then pulling from
+// another will bring it back, since there's no tombstone record.
+function mergeTradeSets(localTrades, remoteTrades) {
+  const byId = new Map();
+  localTrades.forEach(t => byId.set(t.id, t));
+  let added = 0, updated = 0;
+  remoteTrades.forEach(rt => {
+    const lt = byId.get(rt.id);
+    if (!lt) {
+      byId.set(rt.id, rt);
+      added++;
+    } else if ((rt.updatedAt || '') > (lt.updatedAt || '')) {
+      byId.set(rt.id, rt);
+      updated++;
+    }
+  });
+  return { merged: Array.from(byId.values()), added, updated };
+}
+
+async function importTradesFromGoogleSheets(settings, { onStatus } = {}) {
+  const clientId = (settings.googleClientId || '').trim();
+  const sheetId = (settings.googleSheetId || '').trim();
+  if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first.');
+  if (!sheetId) throw new Error('No Sheet ID saved yet — run a Sync (or Export) once first to create/link a sheet.');
+  const token = await getGoogleAccessToken(clientId, true);
+  onStatus && onStatus('Reading trade data from Google Sheets...');
+  return readTradesFromSheet(token, sheetId);
+}
+
+// Full two-way sync: pull remote rows, merge with local trades (newest wins
+// per trade), then push the merged set back so the Sheet and this device
+// end up consistent. Run this on every device you use — the first time on
+// a new device it will require a Google sign-in popup.
+async function syncTradesWithGoogleSheets(localTrades, settings, { onStatus, interactive = true } = {}) {
+  const clientId = (settings.googleClientId || '').trim();
+  if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
+  const token = await getGoogleAccessToken(clientId, interactive);
+  onStatus && onStatus('Signed in. Preparing spreadsheet...');
+  const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
+
+  onStatus && onStatus('Pulling trades from Google Sheets...');
+  const remoteTrades = await readTradesFromSheet(token, sheetId);
+  const { merged, added, updated } = mergeTradeSets(localTrades, remoteTrades);
+  merged.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  onStatus && onStatus('Pushing merged trades back to Google Sheets...');
+  await writeTradesToSheet(token, sheetId, merged);
+
+  return { merged, sheetId, sheetUrl, added, updated };
 }
 
 // ---------- INTERACTIVE BROKERS CSV SYNC ----------
@@ -182,11 +301,12 @@ function parseIBKRCsv(text) {
     }
     const rawDate = cols.datetime !== -1 ? (r[cols.datetime] || '') : '';
     const date = normalizeIBKRDate(rawDate);
+    const time = normalizeIBKRTime(rawDate);
     const account = cols.account !== -1 ? (r[cols.account] || '').trim() : '';
-    executions.push({ symbol, qty, price, date, account });
+    executions.push({ symbol, qty, price, date, time, account });
   }
 
-  executions.sort((a, b) => (a.date || '').localeCompare(b.date || '') || 0);
+  executions.sort((a, b) => (a.date + 'T' + (a.time || '00:00')).localeCompare(b.date + 'T' + (b.time || '00:00')));
   return matchExecutionsFIFO(executions);
 }
 
@@ -202,6 +322,17 @@ function normalizeIBKRDate(raw) {
   return new Date().toISOString().split('T')[0];
 }
 
+// IBKR Flex/Activity exports commonly separate date and time with a
+// semicolon ("20260722;093500") or a space ("2026-07-22 09:35:00").
+function normalizeIBKRTime(raw) {
+  if (!raw) return '';
+  const parts = raw.trim().split(/[;,]/).map(s => s.trim());
+  const timePart = parts.length > 1 ? parts[1] : (raw.includes(' ') ? raw.trim().split(/\s+/)[1] : '');
+  const m = (timePart || '').match(/^(\d{1,2}):?(\d{2})/);
+  if (m) return `${m[1].padStart(2, '0')}:${m[2]}`;
+  return '';
+}
+
 // FIFO-match buy/sell executions per symbol+account into closed round-trip trades.
 function matchExecutionsFIFO(executions) {
   const groups = {};
@@ -212,7 +343,7 @@ function matchExecutionsFIFO(executions) {
 
   const closedTrades = [];
   Object.values(groups).forEach(execs => {
-    const openLots = []; // { qty (signed), price, date }
+    const openLots = []; // { qty (signed), price, date, time }
     execs.forEach(exec => {
       let remaining = exec.qty;
       while (remaining !== 0 && openLots.length && Math.sign(openLots[0].qty) !== Math.sign(remaining)) {
@@ -221,23 +352,26 @@ function matchExecutionsFIFO(executions) {
         const side = lot.qty > 0 ? 'long' : 'short';
         const entry = lot.price, exit = exec.price;
         const pnl = side === 'long' ? (exit - entry) * closeQty : (entry - exit) * closeQty;
-        const riskPerShare = 0; // unknown from broker export; leave stop blank
         closedTrades.push({
+          id: generateSyncId(),
           symbol: exec.symbol,
           side,
-          date: exec.date,
+          date: lot.date,
+          entryTime: lot.time || '',
           entry,
           exit,
+          exitTime: exec.time || '',
           qty: closeQty,
           stop: side === 'long' ? entry - Math.abs(entry * 0.01) : entry + Math.abs(entry * 0.01),
           pnl: parseFloat(pnl.toFixed(2)),
           account: exec.account,
+          updatedAt: new Date().toISOString(),
         });
         lot.qty += lot.qty > 0 ? -closeQty : closeQty;
         remaining += remaining > 0 ? -closeQty : closeQty;
         if (lot.qty === 0) openLots.shift();
       }
-      if (remaining !== 0) openLots.push({ qty: remaining, price: exec.price, date: exec.date });
+      if (remaining !== 0) openLots.push({ qty: remaining, price: exec.price, date: exec.date, time: exec.time });
     });
   });
 

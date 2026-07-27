@@ -109,6 +109,7 @@ tr:hover td { background: var(--bg3); }
 .tag.scalp { background: rgba(0,212,170,0.2); color: var(--accent2); }
 .tag.other { background: rgba(148,163,184,0.2); color: var(--text2); }
 .tag.open-position { background: rgba(59,130,246,0.2); color: var(--blue); }
+.cell-subtext { font-size: 0.72rem; color: var(--text2); font-weight: 400; }
 .label-hint { font-weight: 400; color: var(--text2); font-size: 0.78rem; text-transform: none; letter-spacing: normal; }
 .icon-btn { background: none; border: none; color: var(--text2); cursor: pointer; padding: 4px; transition: color 0.2s; }
 .icon-btn:hover { color: var(--accent); }

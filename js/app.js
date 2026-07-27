@@ -2,7 +2,6 @@
 let trades = [];
 let accounts = [];
 let settings = DEFAULT_SETTINGS;
-let nextId = 1;
 let nextAccountId = 1;
 let editingId = null;
 let selectedRating = 3;
@@ -28,24 +27,35 @@ function isClosedTrade(t) { return t.pnl !== null && t.pnl !== undefined; }
 function closedTrades() { return trades.filter(isClosedTrade); }
 
 // STATE LOAD / PERSIST
+
+// Older local data may have numeric/missing ids or no updatedAt — backfill
+// so every trade has a stable string id and a comparable timestamp for sync.
+function migrateTradeIds(list) {
+  let changed = false;
+  list.forEach(t => {
+    if (!t.id || typeof t.id !== 'string') { t.id = generateSyncId(); changed = true; }
+    if (!t.updatedAt) { t.updatedAt = (t.date ? t.date + 'T00:00:00.000Z' : new Date().toISOString()); changed = true; }
+  });
+  return changed;
+}
+
 function loadState() {
   if (isFirstRun()) {
     trades = [...SAMPLE_TRADES];
     accounts = [...SAMPLE_ACCOUNTS];
     settings = { ...DEFAULT_SETTINGS };
-    nextId = trades.length + 1;
     nextAccountId = accounts.length + 1;
     persistAll();
   } else {
     trades = loadTrades() || [...SAMPLE_TRADES];
     accounts = loadAccounts() || [...SAMPLE_ACCOUNTS];
     settings = loadSettings();
-    nextId = loadNextId(trades.reduce((m, t) => Math.max(m, t.id), 0) + 1);
     nextAccountId = loadNextAccountId(accounts.reduce((m, a) => Math.max(m, a.id), 0) + 1);
+    if (migrateTradeIds(trades)) persistTrades();
   }
 }
 
-function persistTrades() { saveTrades(trades); saveNextId(nextId); }
+function persistTrades() { saveTrades(trades); }
 function persistAccounts() { saveAccounts(accounts); saveNextAccountId(nextAccountId); }
 function persistSettings() { saveSettings(settings); }
 function persistAll() { persistTrades(); persistAccounts(); persistSettings(); }
@@ -73,6 +83,9 @@ document.addEventListener('DOMContentLoaded', () => {
     renderDashboardCharts();
     renderAnalyticsCharts();
   }, 100);
+  // Give the Google Identity Services script (loaded async) a moment before
+  // trying a silent, no-popup sync attempt.
+  setTimeout(attemptSilentAutoSync, 1200);
   window.addEventListener('storage', handleCrossTabStorageChange);
 });
 
@@ -143,6 +156,7 @@ function setupEventListeners() {
   // Settings: daily goal
   document.getElementById('saveGoalBtn').addEventListener('click', saveGoalSetting);
   // Settings: Google Sheets
+  document.getElementById('syncSheetsBtn').addEventListener('click', () => handleSyncSheets());
   document.getElementById('exportSheetsBtn').addEventListener('click', handleExportToSheets);
   document.getElementById('exportCsvBtn').addEventListener('click', () => exportTradesToCSV(trades));
   // Settings: Interactive Brokers
@@ -257,6 +271,7 @@ function renderSettingsPage() {
   if (clientIdInput) clientIdInput.value = settings.googleClientId || '';
   const sheetIdInput = document.getElementById('set-googleSheetId');
   if (sheetIdInput) sheetIdInput.value = settings.googleSheetId || '';
+  renderLastSyncStatus();
 
   const list = document.getElementById('settingsAccountsList');
   if (list) {
@@ -314,11 +329,52 @@ function renderGoalCard() {
   `;
 }
 
-// GOOGLE SHEETS EXPORT
-async function handleExportToSheets() {
+// GOOGLE SHEETS SYNC
+function readGoogleSettingsFromForm() {
   settings.googleClientId = document.getElementById('set-googleClientId').value.trim();
   settings.googleSheetId = document.getElementById('set-googleSheetId').value.trim();
   persistSettings();
+}
+
+// Ensures every account name referenced by (possibly remote) trades exists
+// locally, auto-creating any that came from another device's sync.
+function ensureAccountsForTrades(tradeList) {
+  const known = new Set(accounts.map(a => a.name));
+  let changed = false;
+  tradeList.forEach(t => {
+    const name = (t.account || '').trim();
+    if (name && !known.has(name)) {
+      accounts.push({ id: nextAccountId++, name, broker: 'Synced' });
+      known.add(name);
+      changed = true;
+    }
+  });
+  if (changed) persistAccounts();
+}
+
+function renderLastSyncStatus() {
+  const el = document.getElementById('sheetsLastSync');
+  if (!el) return;
+  el.textContent = settings.lastSyncedAt ? `Last synced: ${new Date(settings.lastSyncedAt).toLocaleString()}` : '';
+  el.className = 'settings-status';
+}
+
+function refreshAllViews() {
+  populateAccountSelects();
+  renderJournal();
+  renderRecentTrades();
+  updateDashboardStats();
+  renderDashboardCharts();
+  renderAnalyticsStats();
+  renderAnalyticsCharts();
+  renderAccountsPage();
+  renderGoalCard();
+}
+
+// Push-only: overwrites the Sheet with exactly what's in this device's
+// local trades. Use "Sync Now" instead for keeping multiple devices lined up.
+async function handleExportToSheets() {
+  readGoogleSettingsFromForm();
   const status = document.getElementById('sheetsStatus');
   status.textContent = 'Connecting to Google...';
   status.className = 'settings-status pending';
@@ -328,14 +384,55 @@ async function handleExportToSheets() {
     });
     settings.googleSheetId = result.sheetId;
     settings.googleSheetUrl = result.sheetUrl;
+    settings.lastSyncedAt = new Date().toISOString();
     persistSettings();
     document.getElementById('set-googleSheetId').value = result.sheetId;
-    status.innerHTML = `Exported ${trades.length} trades. <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
+    status.innerHTML = `Pushed ${trades.length} trades (overwrote the sheet). <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
     status.className = 'settings-status success';
+    renderLastSyncStatus();
   } catch (err) {
     status.textContent = err.message || 'Export failed.';
     status.className = 'settings-status error';
   }
+}
+
+// Two-way sync: pulls trades added on other devices, merges with what's
+// here, and pushes the combined set back so every device converges.
+async function handleSyncSheets({ interactive = true, silent = false } = {}) {
+  readGoogleSettingsFromForm();
+  const status = document.getElementById('sheetsStatus');
+  if (!silent) { status.textContent = 'Connecting to Google...'; status.className = 'settings-status pending'; }
+  try {
+    const result = await syncTradesWithGoogleSheets(trades, settings, {
+      onStatus: (msg) => { if (!silent) status.textContent = msg; },
+      interactive,
+    });
+    trades = result.merged;
+    ensureAccountsForTrades(trades);
+    persistTrades();
+    settings.googleSheetId = result.sheetId;
+    settings.googleSheetUrl = result.sheetUrl;
+    settings.googleAutoSync = true;
+    settings.lastSyncedAt = new Date().toISOString();
+    persistSettings();
+    document.getElementById('set-googleSheetId').value = result.sheetId;
+    refreshAllViews();
+    renderLastSyncStatus();
+    if (!silent) {
+      status.innerHTML = `Synced — pulled ${result.added} new / updated ${result.updated} from the sheet. <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
+      status.className = 'settings-status success';
+    }
+  } catch (err) {
+    if (!silent) { status.textContent = err.message || 'Sync failed.'; status.className = 'settings-status error'; }
+  }
+}
+
+// Best-effort silent sync on load: only succeeds if this browser already has
+// a live Google grant (no popup), so it never surprises the user.
+function attemptSilentAutoSync() {
+  if (!settings.googleAutoSync || !settings.googleClientId || !settings.googleSheetId) return;
+  if (!gisReady()) return;
+  handleSyncSheets({ interactive: false, silent: true });
 }
 
 // INTERACTIVE BROKERS CSV IMPORT
@@ -361,10 +458,11 @@ function handleIBKRImport() {
         const riskPerShare = Math.abs(t.entry - t.stop);
         const r = riskPerShare > 0 ? parseFloat((t.pnl / (riskPerShare * t.qty)).toFixed(2)) : 0;
         trades.push({
-          id: nextId++, date: t.date, symbol: t.symbol, side: t.side, setup: 'other',
+          id: generateSyncId(), date: t.date, symbol: t.symbol, side: t.side, setup: 'other',
           entry: t.entry, exit: t.exit, qty: t.qty, stop: t.stop, pnl: t.pnl, r,
           rating: 3, emotion: 'focused', notes: 'Imported from Interactive Brokers CSV sync.',
-          account: accountName,
+          account: accountName, entryTime: t.entryTime || '', exitTime: t.exitTime || '',
+          updatedAt: new Date().toISOString(),
         });
       });
       trades.sort((a, b) => b.date.localeCompare(a.date));
@@ -401,7 +499,6 @@ function handleResetData() {
   trades = [];
   accounts = [{ id: 1, name: 'Main Account', broker: 'Manual' }];
   settings = { ...DEFAULT_SETTINGS };
-  nextId = 1;
   nextAccountId = 2;
   persistAll();
   document.getElementById('searchTrades').value = '';
@@ -439,6 +536,10 @@ function openAddTradeModal(tradeId = null) {
       document.getElementById('f-stop').value = t.stop;
       document.getElementById('f-notes').value = t.notes;
       document.getElementById('f-emotion').value = t.emotion;
+      document.getElementById('f-entryTime').value = t.entryTime || nowTimeHHMM();
+      // Default the exit-time field to "now" when there's no exit price yet,
+      // so closing the position later captures an accurate close timestamp.
+      document.getElementById('f-exitTime').value = t.exitTime || nowTimeHHMM();
       if (t.account) document.getElementById('f-account').value = t.account;
       setRating(t.rating);
     }
@@ -453,10 +554,17 @@ function openAddTradeModal(tradeId = null) {
     document.getElementById('f-stop').value = '';
     document.getElementById('f-notes').value = '';
     document.getElementById('f-emotion').value = 'focused';
+    document.getElementById('f-entryTime').value = nowTimeHHMM();
+    document.getElementById('f-exitTime').value = nowTimeHHMM();
     if (accounts.length) document.getElementById('f-account').value = accounts[0].name;
     setRating(3);
   }
   tradeModal.classList.add('active');
+}
+
+function nowTimeHHMM() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
 }
 
 function closeModal() {
@@ -478,6 +586,8 @@ function saveTrade() {
   const emotion = document.getElementById('f-emotion').value;
   const rating = parseInt(document.getElementById('f-rating').value);
   const account = document.getElementById('f-account').value || (accounts[0] && accounts[0].name) || 'Main';
+  const entryTime = document.getElementById('f-entryTime').value || nowTimeHHMM();
+  const exitTimeRaw = document.getElementById('f-exitTime').value;
 
   if (!symbol || !date || isNaN(entry) || (exit !== null && isNaN(exit))) {
     alert('Please fill in required fields: Symbol, Date, Entry Price. Exit Price can be left blank to keep the position open.');
@@ -485,6 +595,9 @@ function saveTrade() {
   }
 
   let pnl = null, r = null;
+  // The actual wall-clock time this trade was closed — captured automatically
+  // (the field defaults to "now", editable if you're logging after the fact).
+  const exitTime = exit !== null ? (exitTimeRaw || nowTimeHHMM()) : '';
   if (exit !== null) {
     pnl = side === 'long' ? (exit - entry) * qty : (entry - exit) * qty;
     const riskPerShare = Math.abs(entry - stop);
@@ -492,11 +605,12 @@ function saveTrade() {
     pnl = parseFloat(pnl.toFixed(2));
   }
 
+  const updatedAt = new Date().toISOString();
   if (editingId) {
     const idx = trades.findIndex(t => t.id === editingId);
-    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account };
+    if (idx !== -1) trades[idx] = { ...trades[idx], symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt };
   } else {
-    trades.push({ id: nextId++, symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account });
+    trades.push({ id: generateSyncId(), symbol, date, side, setup, entry, exit, qty, stop, pnl, r, notes, emotion, rating, account, entryTime, exitTime, updatedAt });
   }
   trades.sort((a, b) => b.date.localeCompare(a.date));
   persistTrades();
@@ -646,13 +760,13 @@ function renderJournal() {
       : `<td>—</td>`;
     return `
     <tr>
-      <td>${t.date}</td>
+      <td>${t.date}${t.entryTime ? `<div class="cell-subtext">${t.entryTime}</div>` : ''}</td>
       <td><strong>${t.symbol}</strong></td>
       <td><span class="tag ${t.side}">${t.side.toUpperCase()}</span></td>
       <td><span class="tag ${t.setup}">${t.setup}</span></td>
       <td>${t.account || ''}</td>
       <td>$${t.entry.toFixed(2)}</td>
-      <td>${closed ? '$' + t.exit.toFixed(2) : '—'}</td>
+      <td>${closed ? '$' + t.exit.toFixed(2) + (t.exitTime ? `<div class="cell-subtext">${t.exitTime}</div>` : '') : '—'}</td>
       ${pnlCell}
       ${rCell}
       <td>${'★'.repeat(t.rating)}${'☆'.repeat(5-t.rating)}</td>
