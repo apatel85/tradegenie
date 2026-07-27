@@ -519,7 +519,7 @@
 
         <div id="ibkrFlexFields">
           <p class="settings-desc">Uses IBKR's <strong>Flex Web Service</strong> — no local program needed, just your Token and a Query ID. Set up a "Trades" Flex Query (Account Management → Reporting → Flex Queries → create a Trade Confirmation Flex Query, XML format), and enable Flex Web Service under Reporting → Settings to get your Token.</p>
-          <p class="settings-desc"><strong>Limitations:</strong> this is a server-to-server reporting API, not built for direct browser access — it may not accept requests from this page's origin (CORS), which "Test Connection" will reveal immediately with no code-level fix possible here if so. Report generation isn't instant (a few seconds' delay after each request), and IBKR rate-limits repeated calls, so the check interval has a 5-minute floor here regardless of what you enter.</p>
+          <p class="settings-desc">Requests are routed through a small proxy (a Supabase Edge Function — IBKR's endpoint doesn't accept direct browser requests) that only forwards your Token and Query ID to IBKR and returns the response; it stores nothing. <strong>Limitations:</strong> report generation isn't instant (a few seconds' delay after each request), and IBKR rate-limits repeated calls, so the check interval has a 5-minute floor here regardless of what you enter.</p>
           <div class="form-grid">
             <div class="form-group">
               <label>Flex Token</label>

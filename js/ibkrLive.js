@@ -6,7 +6,9 @@
 //   1. Client Portal Gateway — a free local program you run on your own
 //      computer and log into once (https://localhost:5000 by default).
 //   2. Flex Web Service — a plain HTTPS reporting API keyed by a Token +
-//      Query ID from Account Management, no local program needed.
+//      Query ID from Account Management, no local program needed. Routed
+//      through a small proxy (see supabase/functions/ibkr-flex-proxy/)
+//      since IBKR's endpoint doesn't accept direct browser requests.
 // While this app is open in a browser tab, it polls whichever source is
 // enabled and auto-imports new executions, reusing the exact same FIFO
 // round-trip matcher the manual CSV import uses (see matchExecutionsFIFO in
@@ -135,18 +137,18 @@ async function pollIBKRGateway(baseUrl, existingTrades) {
 //      returns a "still generating" error (code 1019) for a few seconds
 //      after SendRequest, so this polls with a short retry/backoff.
 //
-// The big open question, stated plainly: Flex Web Service is a
-// server-to-server reporting API, not built for direct browser access — it
-// may not send CORS headers permitting requests from this page's origin at
-// all. "Test Connection" surfaces that immediately if so; there's no
-// code-level fix for it from a static frontend without a backend proxy,
-// same caveat as the Gateway path.
+// Confirmed by a live "Test Connection" failure: IBKR's Flex Web Service
+// does not send CORS headers permitting requests from this page's origin,
+// so calls are routed through a small stateless Supabase Edge Function
+// (see supabase/functions/ibkr-flex-proxy/) that forwards the same two
+// calls server-side and adds CORS headers on the way back. It stores
+// nothing — the token is passed through per-request from this browser,
+// same trust model as every other API key in this app.
 //
 // IBKR also throttles Flex Web Service calls (repeated rapid requests can
 // get a query temporarily locked out), so the UI enforces a much longer
 // minimum poll interval here (5 minutes) than the Gateway path (15s).
-const FLEX_SEND_REQUEST_URL = 'https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest';
-const FLEX_GET_STATEMENT_URL = 'https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement';
+const FLEX_PROXY_BASE = 'https://iknfvddnevudpjtyxkbh.supabase.co/functions/v1/ibkr-flex-proxy';
 const FLEX_STATEMENT_IN_PROGRESS_CODE = '1019';
 
 function parseFlexXML(xmlText) {
@@ -155,12 +157,13 @@ function parseFlexXML(xmlText) {
   return doc;
 }
 
-async function flexFetchText(url) {
+async function flexFetchText(action, token, param) {
+  const url = `${FLEX_PROXY_BASE}?action=${action}&t=${encodeURIComponent(token)}&q=${encodeURIComponent(param)}`;
   let res;
   try {
     res = await fetch(url);
   } catch (e) {
-    throw new Error(`Could not reach IBKR's Flex Web Service. This is often a CORS block (the endpoint may not accept requests from this page's origin), which isn't fixable from here without a backend proxy.`);
+    throw new Error(`Could not reach the IBKR Flex proxy. Check your internet connection and try again.`);
   }
   if (!res.ok) throw new Error(`IBKR Flex Web Service request failed (${res.status}).`);
   return res.text();
@@ -168,8 +171,7 @@ async function flexFetchText(url) {
 
 // Step 1: kick off report generation, return the ReferenceCode to poll for.
 async function flexSendRequest(token, queryId) {
-  const url = `${FLEX_SEND_REQUEST_URL}?t=${encodeURIComponent(token)}&q=${encodeURIComponent(queryId)}&v=3`;
-  const text = await flexFetchText(url);
+  const text = await flexFetchText('send', token, queryId);
   const doc = parseFlexXML(text);
   const status = doc.querySelector('Status')?.textContent;
   if (status !== 'Success') {
@@ -185,9 +187,8 @@ async function flexSendRequest(token, queryId) {
 // Step 2: poll for the finished report, retrying while IBKR is still
 // generating it (error code 1019).
 async function flexGetStatement(token, referenceCode, { maxAttempts = 6, delayMs = 3000 } = {}) {
-  const url = `${FLEX_GET_STATEMENT_URL}?t=${encodeURIComponent(token)}&q=${encodeURIComponent(referenceCode)}&v=3`;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const text = await flexFetchText(url);
+    const text = await flexFetchText('status', token, referenceCode);
     // A finished Trades report doesn't start with <FlexStatementResponse>,
     // it starts with <FlexQueryResponse> — only the error/in-progress shape
     // uses the former, so check for that before treating it as an error.
