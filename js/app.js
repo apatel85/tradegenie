@@ -99,17 +99,21 @@ function seedSampleAccounts() {
   return SAMPLE_ACCOUNTS.map(a => ({ ...a, updatedAt: new Date().toISOString() }));
 }
 
+// Sign-in is required to reach the app (see js/auth.js), so there's no more
+// "anonymous first run" — a brand-new device just starts blank, and the
+// Google Sheet resolved during sign-in (existing or freshly created) is
+// what actually populates trades/accounts, via the sync in completeUnlock().
 function loadState() {
   if (isFirstRun()) {
-    trades = [...SAMPLE_TRADES];
-    accounts = seedSampleAccounts();
+    trades = [];
+    accounts = [];
     settings = { ...DEFAULT_SETTINGS };
     tombstones = [];
     syncSnapshot = { trades: {}, accounts: {} };
     persistAll();
   } else {
-    trades = loadTrades() || [...SAMPLE_TRADES];
-    accounts = loadAccounts() || seedSampleAccounts();
+    trades = loadTrades() || [];
+    accounts = loadAccounts() || [];
     settings = loadSettings();
     tombstones = loadTombstones();
     syncSnapshot = loadSyncSnapshot();
@@ -117,6 +121,20 @@ function loadState() {
     if (migrateAccountIds(accounts)) { saveAccounts(accounts); changed = true; }
     if (changed) persistTrades();
   }
+}
+
+// Sample/demo data is opt-in now (Settings > Manage Accounts > "Load Sample
+// Data"), never auto-seeded — see loadState() above.
+function loadSampleData() {
+  if (!confirm('Add sample demo trades and accounts to explore the app? These use stable "sample-" ids and are automatically excluded from Google Sheets sync (see isRealId() in js/integrations.js).')) return;
+  const existingIds = new Set(trades.map(t => t.id));
+  trades = [...trades, ...SAMPLE_TRADES.filter(t => !existingIds.has(t.id))];
+  const existingAccountIds = new Set(accounts.map(a => a.id));
+  accounts = [...accounts, ...seedSampleAccounts().filter(a => !existingAccountIds.has(a.id))];
+  persistTrades();
+  persistAccounts();
+  populateAccountSelects();
+  refreshAllViews();
 }
 
 function recordTombstone(type, id) {
@@ -132,8 +150,11 @@ function persistSyncSnapshot() { saveSyncSnapshot(syncSnapshot); }
 function persistAll() { persistTrades(); persistAccounts(); persistSettings(); persistTombstones(); persistSyncSnapshot(); }
 
 // INIT
-document.addEventListener('DOMContentLoaded', () => {
-  loadState();
+// Called once by js/auth.js's unlockApp(), after sign-in has resolved a
+// Google Sheet and pulled/merged data into trades/accounts — not on raw
+// page load, since the app shell stays hidden behind the auth gate until
+// then (see js/auth.js's initAuth()/resolveSheetAndUnlock()).
+function bootApp() {
   document.getElementById('currentDate').textContent = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
   populateAccountSelects();
@@ -154,11 +175,8 @@ document.addEventListener('DOMContentLoaded', () => {
     renderDashboardCharts();
     renderAnalyticsCharts();
   }, 100);
-  // Give the Google Identity Services script (loaded async) a moment before
-  // trying a silent, no-popup sync attempt.
-  setTimeout(attemptSilentAutoSync, 1200);
   window.addEventListener('storage', handleCrossTabStorageChange);
-});
+}
 
 // Keeps every open tab in sync: if trades/accounts/settings change in
 // localStorage from another tab (e.g. a Reset Data there), pick up the
@@ -227,11 +245,14 @@ function setupEventListeners() {
   // Accounts
   document.getElementById('addAccountBtn').addEventListener('click', () => { navigateTo('settings'); document.getElementById('new-account-name').focus(); });
   document.getElementById('addAccountInlineBtn').addEventListener('click', addAccount);
+  document.getElementById('loadSampleDataBtn').addEventListener('click', loadSampleData);
   // Settings: daily goal
   document.getElementById('saveGoalBtn').addEventListener('click', saveGoalSetting);
   // Settings: Google Sheets
   document.getElementById('syncSheetsBtn').addEventListener('click', () => handleSyncSheets());
   document.getElementById('exportSheetsBtn').addEventListener('click', handleExportToSheets);
+  document.getElementById('openSheetBtn').addEventListener('click', () => { if (settings.googleSheetUrl) window.open(settings.googleSheetUrl, '_blank', 'noopener'); else alert('No sheet linked yet.'); });
+  document.getElementById('changeSheetBtn').addEventListener('click', changeLinkedSheet);
   document.getElementById('exportCsvBtn').addEventListener('click', () => exportTradesToCSV(trades));
   // Settings: Interactive Brokers
   document.getElementById('ibkrImportBtn').addEventListener('click', handleIBKRImport);
@@ -351,10 +372,10 @@ function renderAccountsPage() {
 function renderSettingsPage() {
   const goalInput = document.getElementById('set-dailyGoal');
   if (goalInput) goalInput.value = settings.dailyGoal || '';
-  const clientIdInput = document.getElementById('set-googleClientId');
-  if (clientIdInput) clientIdInput.value = settings.googleClientId || '';
+  const emailInput = document.getElementById('set-accountEmail');
+  if (emailInput) emailInput.value = (authUser && authUser.email) || '';
   const sheetIdInput = document.getElementById('set-googleSheetId');
-  if (sheetIdInput) sheetIdInput.value = settings.googleSheetId || '';
+  if (sheetIdInput) sheetIdInput.value = settings.googleSheetUrl || settings.googleSheetId || '';
   renderLastSyncStatus();
   const finnhubInput = document.getElementById('set-finnhubKey');
   if (finnhubInput) finnhubInput.value = settings.finnhubKey || '';
@@ -419,11 +440,9 @@ function renderGoalCard() {
 }
 
 // GOOGLE SHEETS SYNC
-function readGoogleSettingsFromForm() {
-  settings.googleClientId = document.getElementById('set-googleClientId').value.trim();
-  settings.googleSheetId = document.getElementById('set-googleSheetId').value.trim();
-  persistSettings();
-}
+// (The Sheet ID and account email fields in Settings are read-only now —
+// both are resolved during sign-in in js/auth.js, not typed in by hand. See
+// changeLinkedSheet() in js/auth.js for the "use a different sheet" override.)
 
 // Ensures every account name referenced by (possibly remote) trades exists
 // locally — a safety net for old data or CSV imports, not the normal sync
@@ -485,7 +504,6 @@ function buildSyncState() {
 // years, accounts, settings, tombstones). Use "Sync Now" instead for
 // keeping multiple devices lined up — this doesn't pull anything down.
 async function handleExportToSheets() {
-  readGoogleSettingsFromForm();
   const status = document.getElementById('sheetsStatus');
   status.textContent = 'Connecting to Google...';
   status.className = 'settings-status pending';
@@ -497,7 +515,7 @@ async function handleExportToSheets() {
     settings.googleSheetUrl = result.sheetUrl;
     settings.lastSyncedAt = new Date().toISOString();
     persistSettings();
-    document.getElementById('set-googleSheetId').value = result.sheetId;
+    document.getElementById('set-googleSheetId').value = result.sheetUrl;
     status.innerHTML = `Pushed ${trades.length} trades, ${accounts.length} accounts (overwrote the sheet). <a href="${result.sheetUrl}" target="_blank" rel="noopener">Open Sheet</a>`;
     status.className = 'settings-status success';
     renderLastSyncStatus();
@@ -513,7 +531,6 @@ async function handleExportToSheets() {
 // every device converges. Run this on every device you use — the sheet is
 // the master copy other devices read from.
 async function handleSyncSheets({ interactive = true, silent = false } = {}) {
-  readGoogleSettingsFromForm();
   const status = document.getElementById('sheetsStatus');
   if (!silent) { status.textContent = 'Connecting to Google...'; status.className = 'settings-status pending'; }
   try {
@@ -544,7 +561,7 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
     settings.lastSyncedAt = new Date().toISOString();
     settings.lastSilentSyncError = '';
     persistSettings();
-    document.getElementById('set-googleSheetId').value = result.sheetId;
+    document.getElementById('set-googleSheetId').value = result.sheetUrl;
     refreshAllViews();
     renderLastSyncStatus();
     renderSyncConflicts(result.conflicts);
@@ -569,15 +586,6 @@ async function handleSyncSheets({ interactive = true, silent = false } = {}) {
   }
 }
 
-// Best-effort silent sync on load: only succeeds if this browser already has
-// a live Google grant (no popup), so it never surprises the user. This is
-// what makes the Google sign-in a one-time thing per device — after the
-// first manual "Sync Now" click, every later visit tries this silently.
-function attemptSilentAutoSync() {
-  if (!settings.googleAutoSync || !settings.googleClientId || !settings.googleSheetId) return;
-  if (!gisReady()) return;
-  handleSyncSheets({ interactive: false, silent: true });
-}
 
 // Shows any genuine conflicts (both this device and the sheet changed the
 // same trade/account since the last successful sync). The newer edit was
@@ -687,15 +695,17 @@ function handleIBKRImport() {
 }
 
 // RESET DATA
+// Now that the Google Sheet is the master record, "reset" only clears this
+// browser's local cache and immediately re-pulls fresh from the sheet —
+// your cloud data is never touched by this button (see the Settings copy).
 function handleResetData() {
-  if (!confirm('This will permanently delete all trades, accounts, and settings from this browser and start you with a completely blank journal. Continue?')) return;
+  if (!confirm('This clears this browser\'s local cache and reloads your data fresh from Google Sheets. Your cloud data in Sheets is not touched. Continue?')) return;
+  const keepSheetId = settings.googleSheetId;
+  const keepSheetUrl = settings.googleSheetUrl;
   resetAllData();
-  // Set a truly blank state directly, rather than calling loadState() —
-  // loadState() treats an empty localStorage as a first-ever visit and
-  // reseeds the sample demo trades, which defeats the point of "reset".
   trades = [];
-  accounts = [{ id: generateSyncId(), name: 'Main Account', broker: 'Manual', updatedAt: new Date().toISOString() }];
-  settings = { ...DEFAULT_SETTINGS };
+  accounts = [];
+  settings = { ...DEFAULT_SETTINGS, googleSheetId: keepSheetId, googleSheetUrl: keepSheetUrl };
   tombstones = [];
   syncSnapshot = { trades: {}, accounts: {} };
   persistAll();
@@ -703,19 +713,10 @@ function handleResetData() {
   document.getElementById('filterResult').value = 'all';
   document.getElementById('filterSetup').value = 'all';
   populateAccountSelects();
-  renderRecentTrades();
-  renderJournal();
-  updateDashboardStats();
-  renderDashboardCharts();
-  renderAnalyticsStats();
-  renderAnalyticsCharts();
-  renderAccountsPage();
-  renderSettingsPage();
-  renderGoalCard();
-  document.getElementById('sheetsStatus').textContent = '';
+  refreshAllViews();
   document.getElementById('ibkrStatus').textContent = '';
   renderSyncConflicts([]);
-  alert('All data has been cleared. You are starting fresh.');
+  handleSyncSheets({ interactive: false, silent: false });
 }
 
 // MODAL
