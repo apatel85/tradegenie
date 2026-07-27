@@ -39,6 +39,7 @@ tradegenie/
 │   ├── auth.js          # Landing page / auth gate lifecycle, Google sign-in, Drive sheet discovery
 │   ├── goals.js         # Daily goal assessment + behavioral feedback engine
 │   ├── integrations.js  # Google Sheets two-way sync + Interactive Brokers CSV sync
+│   ├── ibkrLive.js       # IBKR Live Sync (Beta) — polls a local Client Portal Gateway, or IBKR's Flex Web Service, for fills
 │   ├── marketdata.js    # Finnhub symbol search / company profile / live quote
 │   └── app.js          # All app logic, event handlers, renderers (bootApp() called by auth.js)
 └── BLUEPRINT.md        # This document
@@ -141,7 +142,12 @@ One app-wide Google OAuth **Client ID** is hardcoded in `js/auth.js` (`GOOGLE_CL
 - **Daily Goal**: set/update the target used by the goal card
 - **Manage Accounts**: add/remove trading accounts, plus an opt-in "Load Sample Data" button (see 4.11.1 — no longer auto-seeded on first run, since first run now always goes through sign-in)
 - **Google Sheets (Master Record)**: shows the signed-in account and linked sheet (both read-only — resolved during sign-in, not typed in). "Sync Now" / "Push Only" as before; "Open Sheet" / "Use a Different Sheet" (manual override if Drive auto-discovery ever picks the wrong file, or to switch sheets)
-- **Sync from Interactive Brokers**: upload a Flex Query/Activity Statement "Trades" CSV; executions are FIFO-matched per symbol+account into round-trip trades (`js/integrations.js`)
+- **Import from Interactive Brokers (CSV, historical)**: upload a Flex Query/Activity Statement "Trades" CSV; executions are FIFO-matched per symbol+account into round-trip trades (`js/integrations.js`)
+- **IBKR Live Sync (Beta, `js/ibkrLive.js`)**: auto-pulls executions while the tab is open, from either of two sources the user picks in Settings (`settings.ibkrSyncSource`):
+  - **Client Portal Gateway**: a free program the user runs on their own machine and logs into at `https://localhost:5000` — polls its local REST API (`/iserver/account/trades`) every `ibkrPollSeconds` (min 15s) for the current day's fills.
+  - **Flex Web Service**: a Token + Query ID from IBKR Account Management, no local program needed — `flexSendRequest()`/`flexGetStatement()` implement the standard two-step SendRequest → poll-GetStatement flow (retrying while IBKR is still generating the report, error code 1019), and `parseFlexTradesXML()` reads the returned Trade Confirmation XML's named attributes directly. Polled every `ibkrFlexPollSeconds`, floored to 5 minutes regardless of what's configured, since IBKR rate-limits repeated Flex Web Service calls.
+  - Both sources feed the exact same `matchExecutionsFIFO()` matcher the CSV import uses (`commitImportedTrades()` in `js/app.js` is shared by all three paths — CSV, Gateway, Flex), just triggered automatically on an interval instead of a file upload. Every poll re-fetches the *whole* current trading day's executions (neither source offers a "since last poll" cursor) and re-runs FIFO matching, deduping against trades already in the journal by a content signature — so partial fills and multi-leg closes stay correct across repeated polls.
+  - **Real limitations, stated in the Settings copy too**: only works while the tab is open and the data source is reachable (Gateway running/logged-in, or Flex token valid) — no backend to keep polling otherwise. Captures only the current day's fills, not history (use the CSV import for that — Flex Queries *could* be configured for a longer window, but this app treats both live sources as same-day-only for simplicity). Either source may be blocked by CORS — neither the Gateway nor Flex Web Service are built for direct browser access — which "Test Connection" surfaces immediately and has no code-level fix from this side without a backend proxy.
 - **Clear Local Cache**: (formerly "Reset Data") clears this browser's local copy and immediately re-pulls fresh from the Google Sheet — the cloud data is never touched, since the sheet is the master record now
 
 ---

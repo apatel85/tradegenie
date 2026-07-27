@@ -17,6 +17,15 @@ const DEFAULT_SETTINGS = {
   lastSilentSyncError: '',
   finnhubKey: '',
   twelveDataKey: '',
+  ibkrLiveEnabled: false,
+  ibkrSyncSource: 'gateway', // 'gateway' | 'flex'
+  ibkrGatewayUrl: 'https://localhost:5000/v1/api',
+  ibkrPollSeconds: 60,
+  ibkrFlexToken: '',
+  ibkrFlexQueryId: '',
+  ibkrFlexPollSeconds: 300,
+  ibkrLastPollAt: '',
+  ibkrLastPollError: '',
 };
 
 function loadJSON(key, fallback) {

@@ -176,6 +176,7 @@ function bootApp() {
     renderAnalyticsCharts();
   }, 100);
   window.addEventListener('storage', handleCrossTabStorageChange);
+  startIBKRPolling();
 }
 
 // Keeps every open tab in sync: if trades/accounts/settings change in
@@ -256,6 +257,14 @@ function setupEventListeners() {
   document.getElementById('exportCsvBtn').addEventListener('click', () => exportTradesToCSV(trades));
   // Settings: Interactive Brokers
   document.getElementById('ibkrImportBtn').addEventListener('click', handleIBKRImport);
+  document.getElementById('ibkrLiveEnabledToggle').addEventListener('change', handleIBKRLiveToggle);
+  document.getElementById('ibkrTestConnectionBtn').addEventListener('click', handleIBKRTestConnection);
+  document.getElementById('set-ibkrGatewayUrl').addEventListener('change', handleIBKRLiveToggle);
+  document.getElementById('set-ibkrPollSeconds').addEventListener('change', handleIBKRLiveToggle);
+  document.getElementById('set-ibkrFlexToken').addEventListener('change', handleIBKRLiveToggle);
+  document.getElementById('set-ibkrFlexQueryId').addEventListener('change', handleIBKRLiveToggle);
+  document.getElementById('set-ibkrFlexPollSeconds').addEventListener('change', handleIBKRLiveToggle);
+  document.querySelectorAll('input[name="ibkrSyncSource"]').forEach(r => r.addEventListener('change', handleIBKRSourceChange));
   // Settings: market data
   document.getElementById('set-finnhubKey').addEventListener('change', () => {
     settings.finnhubKey = document.getElementById('set-finnhubKey').value.trim();
@@ -383,6 +392,20 @@ function renderSettingsPage() {
   if (finnhubInput) finnhubInput.value = settings.finnhubKey || '';
   const twelveDataInput = document.getElementById('set-twelveDataKey');
   if (twelveDataInput) twelveDataInput.value = settings.twelveDataKey || '';
+  const ibkrToggle = document.getElementById('ibkrLiveEnabledToggle');
+  if (ibkrToggle) ibkrToggle.checked = !!settings.ibkrLiveEnabled;
+  const ibkrUrlInput = document.getElementById('set-ibkrGatewayUrl');
+  if (ibkrUrlInput) ibkrUrlInput.value = settings.ibkrGatewayUrl || IBKR_GATEWAY_DEFAULT_BASE;
+  const ibkrPollInput = document.getElementById('set-ibkrPollSeconds');
+  if (ibkrPollInput) ibkrPollInput.value = settings.ibkrPollSeconds || 60;
+  const ibkrFlexTokenInput = document.getElementById('set-ibkrFlexToken');
+  if (ibkrFlexTokenInput) ibkrFlexTokenInput.value = settings.ibkrFlexToken || '';
+  const ibkrFlexQueryIdInput = document.getElementById('set-ibkrFlexQueryId');
+  if (ibkrFlexQueryIdInput) ibkrFlexQueryIdInput.value = settings.ibkrFlexQueryId || '';
+  const ibkrFlexPollInput = document.getElementById('set-ibkrFlexPollSeconds');
+  if (ibkrFlexPollInput) ibkrFlexPollInput.value = settings.ibkrFlexPollSeconds || 300;
+  renderIBKRSourceFields();
+  renderIBKRLiveStatus();
 
   const list = document.getElementById('settingsAccountsList');
   if (list) {
@@ -655,7 +678,49 @@ function resolveSyncConflict(index, which) {
   refreshAllViews();
 }
 
-// INTERACTIVE BROKERS CSV IMPORT
+// Turns FIFO-matched round-trip trades (from either the CSV import below or
+// the IBKR live poller in js/ibkrLive.js) into full journal entries and
+// commits them - shared so both paths stay in lockstep instead of drifting.
+function commitImportedTrades(imported, notesLabel) {
+  const accountNames = new Set(accounts.map(a => a.name));
+  imported.forEach(t => {
+    const accountName = t.account && t.account.trim() ? t.account.trim() : (accounts[0] && accounts[0].name) || 'Main';
+    if (!accountNames.has(accountName)) {
+      accounts.push({ id: generateSyncId(), name: accountName, broker: 'Interactive Brokers', updatedAt: new Date().toISOString() });
+      accountNames.add(accountName);
+    }
+    const securityType = t.securityType || 'stock';
+    const tickValue = t.tickValue || 1;
+    const multiplier = computeTradeMultiplier(securityType, tickValue);
+    // Risk amount is gross (planned stop distance) - commission is a
+    // realized cost, not part of the planned risk, so it's excluded here.
+    const riskAmount = Math.abs(t.entry - t.stop) * t.qty * multiplier;
+    const r = riskAmount > 0 ? parseFloat((t.pnl / riskAmount).toFixed(2)) : 0;
+    trades.push({
+      id: generateSyncId(), date: t.date, symbol: t.symbol, companyName: t.companyName || '', side: t.side, setup: 'other',
+      securityType, tickValue, optionType: t.optionType || '', strike: t.strike ?? null, commission: t.commission || 0,
+      entry: t.entry, exit: t.exit, qty: t.qty, stop: t.stop, pnl: t.pnl, r,
+      rating: 3, emotion: 'focused', notes: notesLabel,
+      account: accountName, entryTime: t.entryTime || '', exitTime: t.exitTime || '',
+      updatedAt: new Date().toISOString(),
+    });
+  });
+  trades.sort((a, b) => b.date.localeCompare(a.date));
+  persistTrades();
+  persistAccounts();
+  populateAccountSelects();
+  renderJournal();
+  renderRecentTrades();
+  updateDashboardStats();
+  renderDashboardCharts();
+  renderAnalyticsStats();
+  renderAnalyticsCharts();
+  renderAccountsPage();
+  renderGoalCard();
+  scheduleBackgroundSync();
+}
+
+// INTERACTIVE BROKERS CSV IMPORT (manual, historical backfill)
 function handleIBKRImport() {
   const fileInput = document.getElementById('ibkrFileInput');
   const status = document.getElementById('ibkrStatus');
@@ -668,45 +733,10 @@ function handleIBKRImport() {
     try {
       const imported = parseIBKRCsv(reader.result);
       if (!imported.length) throw new Error('No round-trip trades could be matched from this file.');
-      const accountNames = new Set(accounts.map(a => a.name));
-      imported.forEach(t => {
-        const accountName = t.account && t.account.trim() ? t.account.trim() : accounts[0].name;
-        if (!accountNames.has(accountName)) {
-          accounts.push({ id: generateSyncId(), name: accountName, broker: 'Interactive Brokers', updatedAt: new Date().toISOString() });
-          accountNames.add(accountName);
-        }
-        const securityType = t.securityType || 'stock';
-        const tickValue = t.tickValue || 1;
-        const multiplier = computeTradeMultiplier(securityType, tickValue);
-        // Risk amount is gross (planned stop distance) — commission is a
-        // realized cost, not part of the planned risk, so it's excluded here.
-        const riskAmount = Math.abs(t.entry - t.stop) * t.qty * multiplier;
-        const r = riskAmount > 0 ? parseFloat((t.pnl / riskAmount).toFixed(2)) : 0;
-        trades.push({
-          id: generateSyncId(), date: t.date, symbol: t.symbol, companyName: t.companyName || '', side: t.side, setup: 'other',
-          securityType, tickValue, optionType: t.optionType || '', strike: t.strike ?? null, commission: t.commission || 0,
-          entry: t.entry, exit: t.exit, qty: t.qty, stop: t.stop, pnl: t.pnl, r,
-          rating: 3, emotion: 'focused', notes: 'Imported from Interactive Brokers CSV sync.',
-          account: accountName, entryTime: t.entryTime || '', exitTime: t.exitTime || '',
-          updatedAt: new Date().toISOString(),
-        });
-      });
-      trades.sort((a, b) => b.date.localeCompare(a.date));
-      persistTrades();
-      persistAccounts();
-      populateAccountSelects();
-      renderJournal();
-      renderRecentTrades();
-      updateDashboardStats();
-      renderDashboardCharts();
-      renderAnalyticsStats();
-      renderAnalyticsCharts();
-      renderAccountsPage();
-      renderGoalCard();
+      commitImportedTrades(imported, 'Imported from Interactive Brokers CSV sync.');
       status.textContent = `Imported ${imported.length} trade${imported.length === 1 ? '' : 's'} from Interactive Brokers.`;
       status.className = 'settings-status success';
       fileInput.value = '';
-      scheduleBackgroundSync();
     } catch (err) {
       status.textContent = err.message || 'Could not parse this CSV file.';
       status.className = 'settings-status error';
@@ -714,6 +744,115 @@ function handleIBKRImport() {
   };
   reader.onerror = () => { status.textContent = 'Could not read the file.'; status.className = 'settings-status error'; };
   reader.readAsText(file);
+}
+
+// INTERACTIVE BROKERS LIVE SYNC (Beta, js/ibkrLive.js) - auto-pull today's
+// executions from either a locally-running Client Portal Gateway, or IBKR's
+// Flex Web Service (Token + Query ID, no local program needed) - whichever
+// settings.ibkrSyncSource selects.
+let ibkrPollTimer = null;
+
+function renderIBKRLiveStatus() {
+  const el = document.getElementById('ibkrLiveStatus');
+  if (!el) return;
+  const parts = [];
+  if (settings.ibkrLastPollAt) parts.push(`Last checked: ${new Date(settings.ibkrLastPollAt).toLocaleTimeString()}`);
+  if (settings.ibkrLastPollError) parts.push(`Error: ${settings.ibkrLastPollError}`);
+  el.textContent = parts.join(' - ');
+  el.className = 'settings-status ' + (settings.ibkrLastPollError ? 'error' : (settings.ibkrLastPollAt ? 'success' : ''));
+}
+
+// Toggles which set of source-specific fields are visible in Settings.
+function renderIBKRSourceFields() {
+  const isFlex = settings.ibkrSyncSource === 'flex';
+  const gatewayFields = document.getElementById('ibkrGatewayFields');
+  const flexFields = document.getElementById('ibkrFlexFields');
+  if (gatewayFields) gatewayFields.style.display = isFlex ? 'none' : '';
+  if (flexFields) flexFields.style.display = isFlex ? '' : 'none';
+  document.querySelectorAll('input[name="ibkrSyncSource"]').forEach(r => { r.checked = r.value === settings.ibkrSyncSource; });
+}
+
+async function runIBKRPoll() {
+  try {
+    let newTrades, label;
+    if (settings.ibkrSyncSource === 'flex') {
+      newTrades = await pollIBKRFlex(settings.ibkrFlexToken, settings.ibkrFlexQueryId, trades);
+      label = 'Auto-pulled from IBKR Flex Web Service (live sync).';
+    } else {
+      const baseUrl = (settings.ibkrGatewayUrl || IBKR_GATEWAY_DEFAULT_BASE).trim().replace(/\/+$/, '');
+      newTrades = await pollIBKRGateway(baseUrl, trades);
+      label = 'Auto-pulled from IBKR Gateway (live sync).';
+    }
+    settings.ibkrLastPollAt = new Date().toISOString();
+    settings.ibkrLastPollError = '';
+    persistSettings();
+    if (newTrades.length) commitImportedTrades(newTrades, label);
+    renderIBKRLiveStatus();
+  } catch (err) {
+    settings.ibkrLastPollError = err.message || 'Poll failed.';
+    persistSettings();
+    renderIBKRLiveStatus();
+  }
+}
+
+function startIBKRPolling() {
+  stopIBKRPolling();
+  if (!settings.ibkrLiveEnabled) return;
+  // Flex Web Service is rate-limited by IBKR (repeated rapid calls can
+  // temporarily lock out a query) so it gets a much longer floor than the
+  // Gateway path, which is just a local request with no such limit.
+  const minSeconds = settings.ibkrSyncSource === 'flex' ? 300 : 15;
+  const configured = settings.ibkrSyncSource === 'flex' ? settings.ibkrFlexPollSeconds : settings.ibkrPollSeconds;
+  const seconds = Math.max(minSeconds, parseInt(configured) || minSeconds);
+  runIBKRPoll(); // check immediately, then on the interval
+  ibkrPollTimer = setInterval(runIBKRPoll, seconds * 1000);
+}
+function stopIBKRPolling() {
+  if (ibkrPollTimer) { clearInterval(ibkrPollTimer); ibkrPollTimer = null; }
+}
+
+async function handleIBKRTestConnection() {
+  const status = document.getElementById('ibkrLiveStatus');
+  status.textContent = 'Testing connection...';
+  status.className = 'settings-status pending';
+  try {
+    if (settings.ibkrSyncSource === 'flex') {
+      const token = document.getElementById('set-ibkrFlexToken').value.trim();
+      const queryId = document.getElementById('set-ibkrFlexQueryId').value.trim();
+      if (!token || !queryId) throw new Error('Enter both your Flex Web Service Token and Query ID first.');
+      const refCode = await flexSendRequest(token, queryId);
+      await flexGetStatement(token, refCode);
+      status.textContent = 'Connected — Flex Query ran successfully. Live sync should work.';
+    } else {
+      const baseUrl = document.getElementById('set-ibkrGatewayUrl').value.trim().replace(/\/+$/, '') || IBKR_GATEWAY_DEFAULT_BASE;
+      const authed = await ibkrCheckAuthStatus(baseUrl);
+      if (!authed) throw new Error('Reached the Gateway, but you are not logged in there. Open the Gateway URL in another tab and log in, then test again.');
+      await ibkrFetchAccounts(baseUrl);
+      status.textContent = 'Connected and logged in - live sync should work.';
+    }
+    status.className = 'settings-status success';
+  } catch (err) {
+    status.textContent = err.message || 'Connection test failed.';
+    status.className = 'settings-status error';
+  }
+}
+
+function handleIBKRSourceChange() {
+  const checked = document.querySelector('input[name="ibkrSyncSource"]:checked');
+  settings.ibkrSyncSource = checked ? checked.value : 'gateway';
+  persistSettings();
+  renderIBKRSourceFields();
+}
+
+function handleIBKRLiveToggle() {
+  settings.ibkrLiveEnabled = document.getElementById('ibkrLiveEnabledToggle').checked;
+  settings.ibkrGatewayUrl = document.getElementById('set-ibkrGatewayUrl').value.trim() || IBKR_GATEWAY_DEFAULT_BASE;
+  settings.ibkrPollSeconds = parseInt(document.getElementById('set-ibkrPollSeconds').value) || 60;
+  settings.ibkrFlexToken = document.getElementById('set-ibkrFlexToken').value.trim();
+  settings.ibkrFlexQueryId = document.getElementById('set-ibkrFlexQueryId').value.trim();
+  settings.ibkrFlexPollSeconds = parseInt(document.getElementById('set-ibkrFlexPollSeconds').value) || 300;
+  persistSettings();
+  startIBKRPolling();
 }
 
 // RESET DATA
