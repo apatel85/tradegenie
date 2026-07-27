@@ -84,10 +84,11 @@ function csvEscape(val) {
 // ---------- GOOGLE SHEETS SYNC (OAuth via Google Identity Services) ----------
 // This is a static, backend-less app, so there is no server to hold a
 // long-lived refresh token — each browser/device has to sign in with Google
-// at least once. After that, requestAccessToken({prompt:''}) can silently
-// re-issue a token (no popup) as long as this browser still has an active
-// Google session and previously-granted consent, which is what lets
-// attemptSilentAutoSync() in app.js keep syncing without asking again.
+// at least once (via the auth gate, see js/auth.js). After that,
+// requestAccessToken({prompt:'none'}) can silently re-issue a token (no
+// popup) as long as this browser still has an active Google session and
+// previously-granted consent, which is what lets initAuth() in js/auth.js
+// reconnect on every later page load without asking again.
 //
 // The spreadsheet is the master record. Tabs:
 //   "Trades <year>"  — one tab per calendar year (keeps each tab a
@@ -100,31 +101,34 @@ function csvEscape(val) {
 //                      actually removes the row from the sheet and from
 //                      every other device on their next sync, instead of
 //                      quietly reappearing.
+// GOOGLE_CLIENT_ID and AUTH_SCOPES are defined in js/auth.js (loaded before
+// this file) — one app-wide OAuth Client ID now, instead of a per-browser
+// Settings field, since sign-in happens at the auth gate before Settings is
+// ever reachable. AUTH_SCOPES covers identity + Sheets + Drive (drive.file
+// only — see js/auth.js for why) in a single grant.
 let gisTokenClient = null;
-let gisTokenClientId = null; // which Client ID gisTokenClient was built for
 let gisAccessToken = null;
 
 function gisReady() {
   return typeof google !== 'undefined' && google.accounts && google.accounts.oauth2;
 }
 
-// Google's own recommended pattern: build the token client once per Client
-// ID, then just reassign .callback and call requestAccessToken() again for
-// each subsequent request — rebuilding it every call (the old behavior
-// here) works too, but reusing it is what Google's docs show and rules out
-// any client-recreation edge cases as a source of "asks to sign in every
-// time" reports.
-function ensureGisTokenClient(clientId, onToken) {
+// Google's own recommended pattern: build the token client once, then just
+// reassign .callback and call requestAccessToken() again for each
+// subsequent request — rebuilding it every call (the old behavior here)
+// works too, but reusing it is what Google's docs show and rules out any
+// client-recreation edge cases as a source of "asks to sign in every time"
+// reports.
+function ensureGisTokenClient(onToken) {
   if (!gisReady()) {
     throw new Error('Google Identity Services script has not loaded yet. Check your connection and try again.');
   }
-  if (!gisTokenClient || gisTokenClientId !== clientId) {
+  if (!gisTokenClient) {
     gisTokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: clientId,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      client_id: GOOGLE_CLIENT_ID,
+      scope: AUTH_SCOPES,
       callback: () => {}, // replaced per-request below
     });
-    gisTokenClientId = clientId;
   }
   gisTokenClient.callback = (resp) => {
     if (resp.error) { onToken(null, resp); return; }
@@ -138,10 +142,9 @@ function ensureGisTokenClient(clientId, onToken) {
 // succeeds if this browser already has a live grant (used for silent
 // auto-sync on load, so we never surprise-popup the user).
 //
-// If silent requests keep failing (attemptSilentAutoSync in app.js needing
-// a fresh "Sync Now" click every page load instead of reconnecting on its
-// own), the two most common real causes — neither fixable in this app's
-// code, since there's no backend to hold a session — are:
+// If silent requests keep failing, the two most common real causes —
+// neither fixable in this app's code, since there's no backend to hold a
+// session — are:
 //   1. Third-party cookies blocked (Safari default, Chrome moving that
 //      direction, Brave, or any Incognito/Private window) — Google's
 //      silent-reauth check runs in a hidden iframe that depends on those
@@ -152,10 +155,10 @@ function ensureGisTokenClient(clientId, onToken) {
 //      click-through, and Google's test-user grants can also be treated as
 //      shorter-lived than a Production app's. This is normal for a
 //      personal-use app in Testing and isn't a bug, just extra friction.
-function getGoogleAccessToken(clientId, interactive) {
+function getGoogleAccessToken(interactive) {
   return new Promise((resolve, reject) => {
     try {
-      const client = ensureGisTokenClient(clientId, (accessToken, err) => {
+      const client = ensureGisTokenClient((accessToken, err) => {
         if (err || !accessToken) {
           reject(new Error(interactive
             ? 'Google sign-in was cancelled or failed.'
@@ -169,6 +172,32 @@ function getGoogleAccessToken(clientId, interactive) {
       reject(e);
     }
   });
+}
+
+// Search this Google account's Drive for an existing TradeGenie spreadsheet
+// (drive.file scope only sees files this app's OAuth client created, which
+// is exactly what ensureSpreadsheet() below produces — that's what makes
+// this a safe, narrow-scope way to find "my" sheet on a brand-new device).
+// Returns the most-recently-modified match that actually looks like a
+// TradeGenie sheet (has at least one "Trades <year>" tab), or null.
+async function findExistingSheetInDrive(token) {
+  const query = encodeURIComponent("mimeType='application/vnd.google-apps.spreadsheet' and name contains 'TradeGenie Journal' and trashed=false");
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&pageSize=10`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!res.ok) throw new Error(`Drive search failed (${res.status}). Make sure the Drive API is enabled in your Google Cloud project.`);
+  const data = await res.json();
+  const files = data.files || [];
+  for (const file of files) {
+    try {
+      const tabs = await getSpreadsheetTabs(token, file.id);
+      if (tabs.some(p => TRADES_TAB_RE.test(p.title) || p.title === ACCOUNTS_TAB)) {
+        return { sheetId: file.id, sheetUrl: `https://docs.google.com/spreadsheets/d/${file.id}/edit`, name: file.name, modifiedTime: file.modifiedTime };
+      }
+    } catch (e) { continue; }
+  }
+  return null;
 }
 
 async function ensureSpreadsheet(token, settings, onStatus) {
@@ -457,10 +486,8 @@ function isRealId(id) { return !!id && !String(id).startsWith('sample-'); }
 // Push-only: overwrites the sheet with exactly what's on this device
 // (all years, accounts, settings, tombstones). Use "Sync Now" instead when
 // you want changes from other devices pulled in too.
-async function exportTradesToGoogleSheets(state, settings, { onStatus } = {}) {
-  const clientId = (settings.googleClientId || '').trim();
-  if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
-  const token = await getGoogleAccessToken(clientId, true);
+async function exportTradesToGoogleSheets(state, settings, { onStatus, preAuthorizedToken } = {}) {
+  const token = preAuthorizedToken || await getGoogleAccessToken(true);
   onStatus && onStatus('Signed in. Preparing spreadsheet...');
   const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
   const existingTabs = await getSpreadsheetTabs(token, sheetId);
@@ -482,10 +509,8 @@ async function exportTradesToGoogleSheets(state, settings, { onStatus } = {}) {
 // flagging genuine conflicts), then push the merged result back so the
 // sheet and this device converge. Run this on every device you use — the
 // first time on a new device it may require a Google sign-in popup.
-async function syncAllWithGoogleSheets(localState, settings, { onStatus, interactive = true } = {}) {
-  const clientId = (settings.googleClientId || '').trim();
-  if (!clientId) throw new Error('Add your Google OAuth Client ID in Settings first (see instructions below the field).');
-  const token = await getGoogleAccessToken(clientId, interactive);
+async function syncAllWithGoogleSheets(localState, settings, { onStatus, interactive = true, preAuthorizedToken } = {}) {
+  const token = preAuthorizedToken || await getGoogleAccessToken(interactive);
   onStatus && onStatus('Signed in. Preparing spreadsheet...');
   const { sheetId, sheetUrl } = await ensureSpreadsheet(token, settings, onStatus);
   const existingTabs = await getSpreadsheetTabs(token, sheetId);

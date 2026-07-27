@@ -20,7 +20,8 @@ A mobile-friendly, single-page web application inspired by TradeZella that gives
 | Frontend | Vanilla HTML5 / CSS3 / JS (ES6+) | Zero dependencies, fast load, fully portable |
 | Charts | Chart.js (CDN) | Lightweight, responsive chart library |
 | Icons | Font Awesome 6 (CDN) | Comprehensive icon set |
-| Storage | localStorage (`js/storage.js`) | Trades, accounts, and settings persist across refresh; no backend needed |
+| Storage | localStorage (`js/storage.js`) as a per-device cache; a Google Sheet in the signed-in user's own Drive is the **master record** | No backend needed, yet the same data follows you across every device/browser you sign into |
+| Auth | Google Identity Services OAuth (`js/auth.js`) — required to reach the app | One Google Cloud OAuth Client ID, hardcoded in `js/auth.js` |
 | Hosting | GitHub Pages | Free, instant, no server |
 
 ---
@@ -33,12 +34,13 @@ tradegenie/
 ├── css/
 │   └── styles.css      # All styles: layout, components, responsive
 ├── js/
-│   ├── data.js         # Sample seed data and constants
-│   ├── storage.js      # localStorage persistence (trades, accounts, settings)
+│   ├── data.js         # Sample seed data and constants (opt-in demo data now, see 4.11)
+│   ├── storage.js      # localStorage persistence (trades, accounts, settings) — per-device cache
+│   ├── auth.js          # Landing page / auth gate lifecycle, Google sign-in, Drive sheet discovery
 │   ├── goals.js         # Daily goal assessment + behavioral feedback engine
 │   ├── integrations.js  # Google Sheets two-way sync + Interactive Brokers CSV sync
 │   ├── marketdata.js    # Finnhub symbol search / company profile / live quote
-│   └── app.js          # All app logic, event handlers, renderers
+│   └── app.js          # All app logic, event handlers, renderers (bootApp() called by auth.js)
 └── BLUEPRINT.md        # This document
 ```
 
@@ -113,20 +115,34 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
   - Warn plainly when a losing day has no streak or reserve cushion
 - Last-7-day dot history for quick visual streak reference
 
-### 4.11 Settings
+### 4.11 Sign-in & Onboarding (js/auth.js)
+Google sign-in is **required** to reach the app — there's no more anonymous/local-only mode. The flow:
+1. **Landing page** (`#landing-page`): marketing page shown when there's no cached session. "Sign In" / "Get Started" both open the auth gate.
+2. **Auth gate** (`#auth-gate`): one "Continue with Google" button requests identity + Sheets + Drive scopes together in a single OAuth popup (`openid email profile https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file`). `drive.file` (not `drive.readonly`) is used deliberately — it only grants access to files this app's own OAuth client created, which is exactly the "TradeGenie Journal — Master" sheet the app creates, avoiding Google's stricter "sensitive scope" verification requirements with no loss of functionality.
+3. **Drive auto-discovery**: `findExistingSheetInDrive()` (js/integrations.js) searches the signed-in account's Drive for a spreadsheet named "TradeGenie Journal" with at least one `Trades <year>` tab, reusing the existing `getSpreadsheetTabs()` sync-engine plumbing.
+   - **Found** + this device has unsynced local trades → asks "merge with this device's trades, or use the cloud copy only?" before proceeding (never silently discards data).
+   - **Found**, no local trades → loads it immediately, no prompt.
+   - **Not found** → asks "create a new spreadsheet?" before creating one (never auto-creates without asking on an interactive sign-in).
+4. **Session cache**: identity (`{email, name}`) is cached in localStorage for 24h so a page refresh skips the landing page — the access token itself is never stored, it's silently re-derived (`prompt:'none'`) via `requestAuthTokenSilent()` on every load. If that silent reconnect fails (third-party cookies blocked, Incognito, revoked consent), the auth gate reappears for one more manual click rather than the old approach of failing invisibly.
+5. **Unlock**: once a sheet is resolved, `completeUnlock()` runs the existing two-way `syncAllWithGoogleSheets()` engine (unchanged — see 4.11.1 below) and calls `bootApp()` in js/app.js, which now only runs once auth resolves rather than unconditionally on page load.
+6. **Sign out** (sidebar button): clears the cached session and reloads the page back to the landing page. Data is untouched in the Sheet — signing back in restores it.
+
+One app-wide Google OAuth **Client ID** is hardcoded in `js/auth.js` (`GOOGLE_CLIENT_ID`) rather than pasted per-browser in Settings — it's a public identifier, safe to commit, but does require its own Google Cloud project (Sheets API + Drive API enabled, Authorized JavaScript origins covering the deployed URL).
+
+### 4.11.1 Google Sheets sync engine (js/integrations.js, unchanged by the auth rework)
+- **Updates**: editing a trade/account updates that same row (matched by a stable UUID `id`, newest `updatedAt` wins).
+- **Deletes propagate**: deleting a trade/account writes a tombstone (`{type, id, deletedAt}` in the "Tombstones" tab); the next sync on any device removes that row everywhere instead of it reappearing.
+- **Per-year tabs, full history**: trades are written to one tab per calendar year ("Trades 2026", "Trades 2027", ...) to keep each tab a manageable size, but the app always reads every year back in, so Analytics/Dashboard cover full history across years.
+- **Conflict detection**: if the same trade/account changed on two devices since the last sync (tracked via a per-id `syncSnapshot`), the newer edit wins automatically (sync always completes) but it's surfaced in a "Sync Conflicts" panel showing exactly which fields differed, with buttons to keep either version.
+- **Accounts + Settings sync too**: Accounts get their own "Accounts" tab; only non-secret preferences (Daily Goal) sync via a "Settings" tab — market-data API keys (Finnhub, Twelve Data) always stay local to each browser.
+- **Demo data never syncs**: the opt-in sample trades/accounts (`SAMPLE_TRADES`/`SAMPLE_ACCOUNTS` in js/data.js, loaded via Settings > "Load Sample Data") carry stable `sample-`/`sample-acc-` id prefixes and are filtered out via `isRealId()` at every sync entry point, so demo data never gets pushed into the shared master sheet.
+
+### 4.12 Settings
 - **Daily Goal**: set/update the target used by the goal card
-- **Manage Accounts**: add/remove trading accounts
-- **Sync with Google Sheets — the sheet is the master record**: OAuth (Google Identity Services) token flow, with `prompt:''` silent re-auth on every later load so sign-in is a one-time thing per device (as long as the browser keeps its Google session). "Sync Now" pulls every year's trades + accounts + Daily Goal from the sheet, merges with local state, and pushes the result back:
-  - **Updates**: editing a trade/account updates that same row (matched by a stable UUID `id`, newest `updatedAt` wins).
-  - **Deletes propagate**: deleting a trade/account writes a tombstone (`{type, id, deletedAt}` in the "Tombstones" tab); the next sync on any device removes that row everywhere instead of it reappearing.
-  - **Per-year tabs, full history**: trades are written to one tab per calendar year ("Trades 2026", "Trades 2027", ...) to keep each tab a manageable size, but the app always reads every year back in, so Analytics/Dashboard cover full history across years.
-  - **Conflict detection**: if the same trade/account changed on two devices since the last sync (tracked via a per-id `syncSnapshot`), the newer edit wins automatically (sync always completes) but it's surfaced in a "Sync Conflicts" panel showing exactly which fields differed, with buttons to keep either version.
-  - **Accounts + Settings sync too**: Accounts get their own "Accounts" tab; only non-secret preferences (Daily Goal) sync via a "Settings" tab — API keys (Google Client ID, Finnhub, Twelve Data) always stay local to each browser for security.
-  - **Demo data never syncs**: the built-in onboarding sample trades/accounts (`SAMPLE_TRADES`/`SAMPLE_ACCOUNTS` in js/data.js) carry stable `sample-`/`sample-acc-` id prefixes and are filtered out via `isRealId()` at both sync entry points (js/integrations.js), so a fresh device's local demo data never gets pushed into the shared master sheet. `migrateAccountIds()` also retroactively re-tags any account that was already mis-migrated to a per-device numeric id before this fix.
-  - **Silent-reauth diagnostics**: if the automatic no-popup reconnect on load fails (most commonly: third-party cookies blocked — Safari default, Chrome moving that way, Brave, or Incognito/Private windows — or the Google Cloud OAuth consent screen still being in "Testing" status), the reason is surfaced next to "Last synced" in Settings instead of failing invisibly, with a nudge to click "Sync Now" to reconnect manually.
-  - A "Push Only" button overwrites the sheet from local data without pulling (all tabs), and CSV export remains available with no setup.
+- **Manage Accounts**: add/remove trading accounts, plus an opt-in "Load Sample Data" button (see 4.11.1 — no longer auto-seeded on first run, since first run now always goes through sign-in)
+- **Google Sheets (Master Record)**: shows the signed-in account and linked sheet (both read-only — resolved during sign-in, not typed in). "Sync Now" / "Push Only" as before; "Open Sheet" / "Use a Different Sheet" (manual override if Drive auto-discovery ever picks the wrong file, or to switch sheets)
 - **Sync from Interactive Brokers**: upload a Flex Query/Activity Statement "Trades" CSV; executions are FIFO-matched per symbol+account into round-trip trades (`js/integrations.js`)
-- **Reset Data**: clears `localStorage` and reseeds the sample dataset
+- **Clear Local Cache**: (formerly "Reset Data") clears this browser's local copy and immediately re-pulls fresh from the Google Sheet — the cloud data is never touched, since the sheet is the master record now
 
 ---
 
@@ -258,3 +274,7 @@ All pages are `<section>` elements with `class="page"`. Navigation toggles `clas
 - [x] Star rating widget highlights and saves correctly
 - [x] Responsive layout tested at 400px, 600px, 900px, 1200px
 - [x] No console errors on load
+- [x] Landing page shown with no cached session; auth gate reachable via Sign In/Get Started
+- [x] Drive auto-discovery: found+has-local-trades shows merge prompt; found+no-local-trades unlocks directly; not-found shows create prompt
+- [x] Session TTL boundary (valid at 23h59m, expired at 24h01m)
+- [x] `bootApp()` only runs after unlock, not on raw page load

@@ -10,11 +10,11 @@ const STORAGE_KEYS = {
 const DEFAULT_SETTINGS = {
   dailyGoal: 300,
   dailyGoalUpdatedAt: '',
-  googleClientId: '',
   googleSheetId: '',
   googleSheetUrl: '',
   googleAutoSync: false,
   lastSyncedAt: '',
+  lastSilentSyncError: '',
   finnhubKey: '',
   twelveDataKey: '',
 };
