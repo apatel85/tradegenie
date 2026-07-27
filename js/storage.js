@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   googleSheetUrl: '',
   googleAutoSync: false,
   lastSyncedAt: '',
+  finnhubKey: '',
 };
 
 function loadJSON(key, fallback) {

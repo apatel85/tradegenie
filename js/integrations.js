@@ -7,11 +7,11 @@ function generateSyncId() {
 
 // Column order doubles as the Google Sheet schema — importTradesFromGoogleSheets
 // reads these same header labels back out, so keep the two in sync.
-const TRADE_EXPORT_COLUMNS = ['id', 'date', 'entryTime', 'symbol', 'securityType', 'side', 'setup', 'entry', 'exit', 'exitTime', 'qty', 'tickValue', 'stop', 'pnl', 'r', 'rating', 'emotion', 'account', 'notes', 'updatedAt'];
-const TRADE_EXPORT_HEADER = ['Trade ID', 'Date', 'Entry Time', 'Symbol', 'Security', 'Side', 'Setup', 'Entry', 'Exit', 'Exit Time', 'Qty', 'Tick Value', 'Stop', 'P&L', 'R', 'Rating', 'Emotion', 'Account', 'Notes', 'Updated At'];
-const TRADE_NUMERIC_COLUMNS = new Set(['entry', 'exit', 'qty', 'tickValue', 'stop', 'pnl', 'r', 'rating']);
-// These must always be a number (never null) — exit/pnl/r stay nullable for open positions.
-const TRADE_REQUIRED_NUMERIC_DEFAULTS = { entry: 0, qty: 1, tickValue: 1, stop: 0, rating: 3 };
+const TRADE_EXPORT_COLUMNS = ['id', 'date', 'entryTime', 'symbol', 'companyName', 'securityType', 'optionType', 'strike', 'side', 'setup', 'entry', 'exit', 'exitTime', 'qty', 'tickValue', 'stop', 'commission', 'pnl', 'r', 'rating', 'emotion', 'account', 'notes', 'updatedAt'];
+const TRADE_EXPORT_HEADER = ['Trade ID', 'Date', 'Entry Time', 'Symbol', 'Company', 'Security', 'Put/Call', 'Strike', 'Side', 'Setup', 'Entry', 'Exit', 'Exit Time', 'Qty', 'Tick Value', 'Stop', 'Commission', 'P&L', 'R', 'Rating', 'Emotion', 'Account', 'Notes', 'Updated At'];
+const TRADE_NUMERIC_COLUMNS = new Set(['entry', 'exit', 'qty', 'tickValue', 'stop', 'strike', 'commission', 'pnl', 'r', 'rating']);
+// These must always be a number (never null) — exit/pnl/r/strike stay nullable.
+const TRADE_REQUIRED_NUMERIC_DEFAULTS = { entry: 0, qty: 1, tickValue: 1, stop: 0, commission: 0, rating: 3 };
 
 // Security-type multiplier shared by the trade form (js/app.js) and the IBKR
 // importer: stock/crypto P&L is price-diff * qty; options add the standard
@@ -278,6 +278,10 @@ const IBKR_COLUMN_ALIASES = {
   account: ['clientaccountid', 'account', 'accountid'],
   assetClass: ['assetclass', 'assetcategory', 'securitytype', 'secType'.toLowerCase()],
   multiplier: ['multiplier'],
+  putCall: ['put/call', 'putcall', 'right'],
+  strike: ['strike', 'strikeprice'],
+  commission: ['ibcommission', 'commission', 'commfee', 'comm/fee'],
+  description: ['description', 'securitydescription'],
 };
 
 // IBKR's AssetClass/AssetCategory values map onto our security types.
@@ -287,6 +291,16 @@ const IBKR_ASSET_CLASS_MAP = {
   FUT: 'futures', FUTURE: 'futures',
   FOP: 'futureOptions',
 };
+
+// Best-effort parse of an OCC-style option symbol (e.g. "AAPL 260116C00200000"
+// or "AAPL260116C00200000") into put/call + strike, used as a fallback when
+// the CSV doesn't have separate Put/Call and Strike columns.
+function parseOccOptionSymbol(symbol) {
+  const cleaned = symbol.replace(/\s+/g, '');
+  const m = cleaned.match(/^([A-Z]{1,6})\d{6}([CP])(\d{8})$/);
+  if (!m) return null;
+  return { putCall: m[2] === 'C' ? 'CALL' : 'PUT', strike: parseInt(m[3], 10) / 1000 };
+}
 
 function findColumn(header, aliases) {
   const lower = header.map(h => h.trim().toLowerCase().replace(/\s+/g, ''));
@@ -335,7 +349,24 @@ function parseIBKRCsv(text) {
     if (!isNaN(multiplierRaw) && multiplierRaw > 0) {
       tickValue = securityType === 'options' ? multiplierRaw / 100 : multiplierRaw;
     }
-    executions.push({ symbol, qty, price, date, time, account, securityType, tickValue });
+
+    const isOptionType = securityType === 'options' || securityType === 'futureOptions';
+    let putCall = cols.putCall !== -1 ? (r[cols.putCall] || '').trim().toUpperCase() : '';
+    let strike = cols.strike !== -1 ? parseFloat((r[cols.strike] || '').replace(/,/g, '')) : NaN;
+    if (isOptionType && (!putCall || isNaN(strike))) {
+      const occ = parseOccOptionSymbol(symbol);
+      if (occ) { putCall = putCall || occ.putCall; if (isNaN(strike)) strike = occ.strike; }
+    }
+    const optionType = putCall.startsWith('P') ? 'put' : putCall.startsWith('C') ? 'call' : '';
+
+    const commissionRaw = cols.commission !== -1 ? parseFloat((r[cols.commission] || '0').replace(/,/g, '')) : 0;
+    // Spread the per-execution commission evenly across its shares/contracts
+    // so a partial FIFO fill only carries its proportional share of the fee.
+    const commissionPerUnit = (!isNaN(commissionRaw) && qty !== 0) ? Math.abs(commissionRaw) / Math.abs(qty) : 0;
+
+    const companyName = cols.description !== -1 ? (r[cols.description] || '').trim() : '';
+
+    executions.push({ symbol, qty, price, date, time, account, securityType, tickValue, optionType, strike: isNaN(strike) ? null : strike, commissionPerUnit, companyName });
   }
 
   executions.sort((a, b) => (a.date + 'T' + (a.time || '00:00')).localeCompare(b.date + 'T' + (b.time || '00:00')));
@@ -375,7 +406,7 @@ function matchExecutionsFIFO(executions) {
 
   const closedTrades = [];
   Object.values(groups).forEach(execs => {
-    const openLots = []; // { qty (signed), price, date, time, securityType, tickValue }
+    const openLots = []; // { qty (signed), price, date, time, securityType, tickValue, optionType, strike, commissionPerUnit, companyName }
     execs.forEach(exec => {
       let remaining = exec.qty;
       while (remaining !== 0 && openLots.length && Math.sign(openLots[0].qty) !== Math.sign(remaining)) {
@@ -384,10 +415,13 @@ function matchExecutionsFIFO(executions) {
         const side = lot.qty > 0 ? 'long' : 'short';
         const entry = lot.price, exit = exec.price;
         const multiplier = computeTradeMultiplier(lot.securityType, lot.tickValue);
-        const pnl = (side === 'long' ? (exit - entry) : (entry - exit)) * closeQty * multiplier;
+        const commission = parseFloat(((lot.commissionPerUnit + exec.commissionPerUnit) * closeQty).toFixed(2));
+        const grossPnl = (side === 'long' ? (exit - entry) : (entry - exit)) * closeQty * multiplier;
+        const pnl = grossPnl - commission;
         closedTrades.push({
           id: generateSyncId(),
           symbol: exec.symbol,
+          companyName: lot.companyName || exec.companyName || '',
           side,
           date: lot.date,
           entryTime: lot.time || '',
@@ -397,6 +431,9 @@ function matchExecutionsFIFO(executions) {
           qty: closeQty,
           securityType: lot.securityType,
           tickValue: lot.tickValue,
+          optionType: lot.optionType || '',
+          strike: lot.strike,
+          commission,
           stop: side === 'long' ? entry - Math.abs(entry * 0.01) : entry + Math.abs(entry * 0.01),
           pnl: parseFloat(pnl.toFixed(2)),
           account: exec.account,
@@ -406,7 +443,7 @@ function matchExecutionsFIFO(executions) {
         remaining += remaining > 0 ? -closeQty : closeQty;
         if (lot.qty === 0) openLots.shift();
       }
-      if (remaining !== 0) openLots.push({ qty: remaining, price: exec.price, date: exec.date, time: exec.time, securityType: exec.securityType, tickValue: exec.tickValue });
+      if (remaining !== 0) openLots.push({ qty: remaining, price: exec.price, date: exec.date, time: exec.time, securityType: exec.securityType, tickValue: exec.tickValue, optionType: exec.optionType, strike: exec.strike, commissionPerUnit: exec.commissionPerUnit, companyName: exec.companyName });
     });
   });
 
