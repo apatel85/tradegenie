@@ -92,11 +92,11 @@ async function twelveDataRequest(path, apiKey) {
 }
 
 async function lookupSymbolInfoTwelveData(apiKey, symbol) {
-  if (!apiKey) throw new Error('Add your Twelve Data API key in Settings > Market Data first (used for Futures/Future Options).');
+  if (!apiKey) throw new Error('No Twelve Data API key set.');
   const quote = await twelveDataRequest(`/quote?symbol=${encodeURIComponent(symbol)}`, apiKey);
   const price = quote && (quote.close !== undefined) ? parseFloat(quote.close) : null;
   if (price === null && !quote.name) {
-    throw new Error(`No data found for "${symbol}" on Twelve Data. Continuous futures symbols (e.g. "CL", "ES", "GC") work best on the free tier — specific expiry contracts usually aren't covered.`);
+    throw new Error(`No data for "${symbol}" — Twelve Data's free Basic plan does not include Futures/Commodities data (that requires their paid Grow plan or higher), so this is expected on a free key.`);
   }
   return {
     symbol: (quote && quote.symbol) || symbol,
@@ -106,14 +106,65 @@ async function lookupSymbolInfoTwelveData(apiKey, symbol) {
   };
 }
 
+// Yahoo Finance's unofficial chart endpoint — no API key needed, and it
+// does cover continuous futures via "=F" suffixed symbols (ES=F, CL=F,
+// GC=F, NQ=F, ...). This is undocumented and NOT an official API: Yahoo
+// could change or block it anytime, and — unlike Finnhub/Twelve Data — it
+// may not send CORS headers for direct browser requests from an arbitrary
+// origin, which would make every call fail with a generic "Failed to
+// fetch" that no amount of retrying fixes. There's no backend here to
+// route around that, so this is best-effort only.
+const YAHOO_CHART_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+
+async function yahooQuote(symbol) {
+  let res;
+  try {
+    res = await fetch(`${YAHOO_CHART_BASE}${encodeURIComponent(symbol)}`);
+  } catch (e) {
+    throw new Error(`Could not reach Yahoo Finance for "${symbol}" — this unofficial endpoint often blocks direct browser requests (no CORS headers), which isn't fixable without a backend proxy.`);
+  }
+  if (!res.ok) throw new Error(`Yahoo Finance request failed (${res.status}) for "${symbol}".`);
+  const data = await res.json();
+  const result = data && data.chart && data.chart.result && data.chart.result[0];
+  if (!result || !result.meta) throw new Error(`No data found for "${symbol}" on Yahoo Finance.`);
+  const meta = result.meta;
+  return {
+    symbol: meta.symbol || symbol,
+    companyName: meta.longName || meta.shortName || meta.symbol || symbol,
+    exchange: meta.fullExchangeName || meta.exchangeName || '',
+    currentPrice: meta.regularMarketPrice != null ? meta.regularMarketPrice : null,
+  };
+}
+
+async function lookupSymbolInfoYahooFutures(symbol) {
+  // Try the continuous-futures "=F" form first (e.g. "ES" -> "ES=F"),
+  // then fall back to whatever the user typed as-is.
+  const candidates = symbol.endsWith('=F') ? [symbol] : [`${symbol}=F`, symbol];
+  let lastErr;
+  for (const candidate of candidates) {
+    try { return await yahooQuote(candidate); }
+    catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error(`Could not look up "${symbol}" on Yahoo Finance.`);
+}
+
 // Combines search + profile + quote into one call for the Add Trade modal's
-// "Look Up" button, routed by security type: Futures/Future Options use
-// Twelve Data (better futures coverage), everything else uses Finnhub.
+// "Look Up" button, routed by security type. Futures/Future Options try
+// Twelve Data first (works if you're on a paid plan that includes
+// futures), then fall back to Yahoo Finance's unofficial endpoint;
+// everything else uses Finnhub.
 async function lookupSymbolInfo(apiKeys, rawSymbol, securityType) {
   const symbol = (rawSymbol || '').trim().toUpperCase();
   if (!symbol) throw new Error('Enter a symbol first.');
   const useFutures = securityType === 'futures' || securityType === 'futureOptions';
-  return useFutures
-    ? lookupSymbolInfoTwelveData(apiKeys.twelveDataKey, symbol)
-    : lookupSymbolInfoFinnhub(apiKeys.finnhubKey, symbol);
+  if (!useFutures) return lookupSymbolInfoFinnhub(apiKeys.finnhubKey, symbol);
+
+  const attempts = [];
+  if (apiKeys.twelveDataKey) {
+    try { return await lookupSymbolInfoTwelveData(apiKeys.twelveDataKey, symbol); }
+    catch (e) { attempts.push(`Twelve Data — ${e.message}`); }
+  }
+  try { return await lookupSymbolInfoYahooFutures(symbol); }
+  catch (e) { attempts.push(`Yahoo Finance — ${e.message}`); }
+  throw new Error(attempts.join(' | '));
 }
