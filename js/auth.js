@@ -15,7 +15,7 @@
 // https://apatel85.github.io) added under "Authorized JavaScript origins".
 // This value is public (it identifies the app, not a secret) and is safe to
 // commit — see https://developers.google.com/identity/protocols/oauth2/javascript-implicit-flow
-const GOOGLE_CLIENT_ID = 319401977574-ldicfj8e93m040t42vnjboq7mmmo00ro.apps.googleusercontent.com;
+const GOOGLE_CLIENT_ID = '319401977574-ldicfj8e93m040t42vnjboq7mmmo00ro.apps.googleusercontent.com';
 
 // Identity (email/name) + Sheets read/write + Drive discovery, requested
 // together in one popup. drive.file (not drive.readonly) deliberately —
@@ -33,7 +33,7 @@ let authToken = null;  // current access token (Sheets + Drive scoped)
 let _pendingSheetInfo = null;
 
 function clientIdConfigured() {
-  return !!GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.includes('PASTE_YOUR');
+  return !!GOOGLE_CLIENT_ID && !GOOGLE_CLIENT_ID.includes('319401977574-ldicfj8e93m040t42vnjboq7mmmo00ro.apps.googleusercontent.com');
 }
 
 // ── Session cache (identity only — the token itself is never stored, it's
