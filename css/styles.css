@@ -122,6 +122,19 @@ tr:hover td { background: var(--bg3); }
 .symbol-lookup-result.has-content { background: var(--bg3); border-radius: 8px; padding: 10px 12px; }
 .symbol-lookup-result .company-name { color: var(--text); font-weight: 600; }
 .symbol-lookup-result .btn-outline { margin-top: 6px; padding: 5px 12px; font-size: 0.78rem; }
+
+/* SYNC CONFLICTS */
+.conflict-panel:empty { display: none; }
+.conflict-panel { margin-top: 16px; }
+.conflict-panel-title { font-weight: 700; color: var(--yellow); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.conflict-card { background: var(--bg3); border-radius: 10px; padding: 14px; margin-bottom: 12px; border-left: 3px solid var(--yellow); }
+.conflict-card-title { font-weight: 700; margin-bottom: 6px; }
+.conflict-diff-list { margin: 0 0 8px 18px; padding: 0; font-size: 0.85rem; color: var(--text2); }
+.conflict-diff-list li { margin-bottom: 2px; }
+.conflict-kept { font-size: 0.85rem; color: var(--text2); margin-bottom: 10px; }
+.conflict-kept strong { color: var(--text); }
+.conflict-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.conflict-actions .btn-outline { padding: 6px 14px; font-size: 0.82rem; }
 .label-hint { font-weight: 400; color: var(--text2); font-size: 0.78rem; text-transform: none; letter-spacing: normal; }
 .icon-btn { background: none; border: none; color: var(--text2); cursor: pointer; padding: 4px; transition: color 0.2s; }
 .icon-btn:hover { color: var(--accent); }
