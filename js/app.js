@@ -304,6 +304,7 @@ function addAccount() {
   populateAccountSelects();
   renderSettingsPage();
   renderAccountsPage();
+  scheduleBackgroundSync();
 }
 
 function deleteAccount(id) {
@@ -317,6 +318,7 @@ function deleteAccount(id) {
   recordTombstone('account', id);
   populateAccountSelects();
   renderSettingsPage();
+  scheduleBackgroundSync();
   renderAccountsPage();
 }
 
@@ -399,6 +401,7 @@ function saveGoalSetting() {
   settings.dailyGoalUpdatedAt = new Date().toISOString();
   persistSettings();
   renderGoalCard();
+  scheduleBackgroundSync();
   alert('Daily goal saved.');
 }
 
@@ -443,6 +446,19 @@ function renderGoalCard() {
 // (The Sheet ID and account email fields in Settings are read-only now —
 // both are resolved during sign-in in js/auth.js, not typed in by hand. See
 // changeLinkedSheet() in js/auth.js for the "use a different sheet" override.)
+
+// Fires a silent, non-blocking sync shortly after any trade/account/goal
+// change, so the Sheet stays current without the user having to remember to
+// click "Sync Now" — debounced so rapid edits (e.g. importing many IBKR
+// trades) don't fire one sync request per row.
+let backgroundSyncTimer = null;
+function scheduleBackgroundSync() {
+  if (!settings.googleSheetId) return; // sign-in hasn't resolved a sheet yet
+  clearTimeout(backgroundSyncTimer);
+  backgroundSyncTimer = setTimeout(() => {
+    handleSyncSheets({ interactive: false, silent: true });
+  }, 1500);
+}
 
 // Ensures every account name referenced by (possibly remote) trades exists
 // locally — a safety net for old data or CSV imports, not the normal sync
@@ -685,6 +701,7 @@ function handleIBKRImport() {
       status.textContent = `Imported ${imported.length} trade${imported.length === 1 ? '' : 's'} from Interactive Brokers.`;
       status.className = 'settings-status success';
       fileInput.value = '';
+      scheduleBackgroundSync();
     } catch (err) {
       status.textContent = err.message || 'Could not parse this CSV file.';
       status.className = 'settings-status error';
@@ -900,6 +917,7 @@ function saveTrade() {
   renderAnalyticsCharts();
   renderAccountsPage();
   renderGoalCard();
+  scheduleBackgroundSync();
 }
 
 function deleteTrade(id) {
@@ -914,6 +932,7 @@ function deleteTrade(id) {
   renderAnalyticsStats();
   renderAnalyticsCharts();
   renderAccountsPage();
+  scheduleBackgroundSync();
   renderGoalCard();
 }
 
