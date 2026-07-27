@@ -7,11 +7,23 @@ function generateSyncId() {
 
 // Column order doubles as the Google Sheet schema — importTradesFromGoogleSheets
 // reads these same header labels back out, so keep the two in sync.
-const TRADE_EXPORT_COLUMNS = ['id', 'date', 'entryTime', 'symbol', 'side', 'setup', 'entry', 'exit', 'exitTime', 'qty', 'stop', 'pnl', 'r', 'rating', 'emotion', 'account', 'notes', 'updatedAt'];
-const TRADE_EXPORT_HEADER = ['Trade ID', 'Date', 'Entry Time', 'Symbol', 'Side', 'Setup', 'Entry', 'Exit', 'Exit Time', 'Qty', 'Stop', 'P&L', 'R', 'Rating', 'Emotion', 'Account', 'Notes', 'Updated At'];
-const TRADE_NUMERIC_COLUMNS = new Set(['entry', 'exit', 'qty', 'stop', 'pnl', 'r', 'rating']);
+const TRADE_EXPORT_COLUMNS = ['id', 'date', 'entryTime', 'symbol', 'securityType', 'side', 'setup', 'entry', 'exit', 'exitTime', 'qty', 'tickValue', 'stop', 'pnl', 'r', 'rating', 'emotion', 'account', 'notes', 'updatedAt'];
+const TRADE_EXPORT_HEADER = ['Trade ID', 'Date', 'Entry Time', 'Symbol', 'Security', 'Side', 'Setup', 'Entry', 'Exit', 'Exit Time', 'Qty', 'Tick Value', 'Stop', 'P&L', 'R', 'Rating', 'Emotion', 'Account', 'Notes', 'Updated At'];
+const TRADE_NUMERIC_COLUMNS = new Set(['entry', 'exit', 'qty', 'tickValue', 'stop', 'pnl', 'r', 'rating']);
 // These must always be a number (never null) — exit/pnl/r stay nullable for open positions.
-const TRADE_REQUIRED_NUMERIC_DEFAULTS = { entry: 0, qty: 1, stop: 0, rating: 3 };
+const TRADE_REQUIRED_NUMERIC_DEFAULTS = { entry: 0, qty: 1, tickValue: 1, stop: 0, rating: 3 };
+
+// Security-type multiplier shared by the trade form (js/app.js) and the IBKR
+// importer: stock/crypto P&L is price-diff * qty; options add the standard
+// 100-shares-per-contract multiplier on top of tick value; futures/future
+// options use tick value alone (it already encodes $ per point for that
+// contract, e.g. $5/pt for MES, $50/pt for ES).
+function computeTradeMultiplier(securityType, tickValue) {
+  const tv = (typeof tickValue === 'number' && !isNaN(tickValue) && tickValue > 0) ? tickValue : 1;
+  if (securityType === 'options') return 100 * tv;
+  if (securityType === 'futures' || securityType === 'futureOptions') return tv;
+  return 1; // stock, crypto
+}
 
 function tradesToRows(tradeList) {
   const rows = tradeList.map(t => TRADE_EXPORT_COLUMNS.map(c => t[c] === undefined || t[c] === null ? '' : t[c]));
@@ -41,6 +53,7 @@ function rowsToTrades(values) {
     });
     if (!t.symbol || !t.date) continue;
     if (!t.id) t.id = generateSyncId();
+    if (!t.securityType) t.securityType = 'stock';
     if (!t.updatedAt) t.updatedAt = t.date + 'T00:00:00.000Z';
     trades.push(t);
   }
@@ -263,6 +276,16 @@ const IBKR_COLUMN_ALIASES = {
   qty: ['quantity', 'qty', 'shares'],
   price: ['tradeprice', 'price', 'execprice'],
   account: ['clientaccountid', 'account', 'accountid'],
+  assetClass: ['assetclass', 'assetcategory', 'securitytype', 'secType'.toLowerCase()],
+  multiplier: ['multiplier'],
+};
+
+// IBKR's AssetClass/AssetCategory values map onto our security types.
+const IBKR_ASSET_CLASS_MAP = {
+  STK: 'stock', STOCK: 'stock', CASH: 'crypto', CRYPTO: 'crypto',
+  OPT: 'options', OPTION: 'options',
+  FUT: 'futures', FUTURE: 'futures',
+  FOP: 'futureOptions',
 };
 
 function findColumn(header, aliases) {
@@ -303,7 +326,16 @@ function parseIBKRCsv(text) {
     const date = normalizeIBKRDate(rawDate);
     const time = normalizeIBKRTime(rawDate);
     const account = cols.account !== -1 ? (r[cols.account] || '').trim() : '';
-    executions.push({ symbol, qty, price, date, time, account });
+    const assetClassRaw = cols.assetClass !== -1 ? (r[cols.assetClass] || '').trim().toUpperCase() : '';
+    const securityType = IBKR_ASSET_CLASS_MAP[assetClassRaw] || 'stock';
+    const multiplierRaw = cols.multiplier !== -1 ? parseFloat((r[cols.multiplier] || '').replace(/,/g, '')) : NaN;
+    // IBKR's option "Multiplier" is typically 100 already baked in — divide
+    // it back out since our options formula applies its own *100.
+    let tickValue = 1;
+    if (!isNaN(multiplierRaw) && multiplierRaw > 0) {
+      tickValue = securityType === 'options' ? multiplierRaw / 100 : multiplierRaw;
+    }
+    executions.push({ symbol, qty, price, date, time, account, securityType, tickValue });
   }
 
   executions.sort((a, b) => (a.date + 'T' + (a.time || '00:00')).localeCompare(b.date + 'T' + (b.time || '00:00')));
@@ -328,8 +360,8 @@ function normalizeIBKRTime(raw) {
   if (!raw) return '';
   const parts = raw.trim().split(/[;,]/).map(s => s.trim());
   const timePart = parts.length > 1 ? parts[1] : (raw.includes(' ') ? raw.trim().split(/\s+/)[1] : '');
-  const m = (timePart || '').match(/^(\d{1,2}):?(\d{2})/);
-  if (m) return `${m[1].padStart(2, '0')}:${m[2]}`;
+  const m = (timePart || '').match(/^(\d{1,2}):?(\d{2}):?(\d{2})?/);
+  if (m) return `${m[1].padStart(2, '0')}:${m[2]}:${(m[3] || '00').padStart(2, '0')}`;
   return '';
 }
 
@@ -343,7 +375,7 @@ function matchExecutionsFIFO(executions) {
 
   const closedTrades = [];
   Object.values(groups).forEach(execs => {
-    const openLots = []; // { qty (signed), price, date, time }
+    const openLots = []; // { qty (signed), price, date, time, securityType, tickValue }
     execs.forEach(exec => {
       let remaining = exec.qty;
       while (remaining !== 0 && openLots.length && Math.sign(openLots[0].qty) !== Math.sign(remaining)) {
@@ -351,7 +383,8 @@ function matchExecutionsFIFO(executions) {
         const closeQty = Math.min(Math.abs(lot.qty), Math.abs(remaining));
         const side = lot.qty > 0 ? 'long' : 'short';
         const entry = lot.price, exit = exec.price;
-        const pnl = side === 'long' ? (exit - entry) * closeQty : (entry - exit) * closeQty;
+        const multiplier = computeTradeMultiplier(lot.securityType, lot.tickValue);
+        const pnl = (side === 'long' ? (exit - entry) : (entry - exit)) * closeQty * multiplier;
         closedTrades.push({
           id: generateSyncId(),
           symbol: exec.symbol,
@@ -362,6 +395,8 @@ function matchExecutionsFIFO(executions) {
           exit,
           exitTime: exec.time || '',
           qty: closeQty,
+          securityType: lot.securityType,
+          tickValue: lot.tickValue,
           stop: side === 'long' ? entry - Math.abs(entry * 0.01) : entry + Math.abs(entry * 0.01),
           pnl: parseFloat(pnl.toFixed(2)),
           account: exec.account,
@@ -371,7 +406,7 @@ function matchExecutionsFIFO(executions) {
         remaining += remaining > 0 ? -closeQty : closeQty;
         if (lot.qty === 0) openLots.shift();
       }
-      if (remaining !== 0) openLots.push({ qty: remaining, price: exec.price, date: exec.date, time: exec.time });
+      if (remaining !== 0) openLots.push({ qty: remaining, price: exec.price, date: exec.date, time: exec.time, securityType: exec.securityType, tickValue: exec.tickValue });
     });
   });
 
