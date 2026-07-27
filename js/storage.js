@@ -12,6 +12,8 @@ const DEFAULT_SETTINGS = {
   googleClientId: '',
   googleSheetId: '',
   googleSheetUrl: '',
+  googleAutoSync: false,
+  lastSyncedAt: '',
 };
 
 function loadJSON(key, fallback) {
